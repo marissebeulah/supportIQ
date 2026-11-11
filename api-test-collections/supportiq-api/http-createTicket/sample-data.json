@@ -1,0 +1,6 @@
+{
+  "subject": "Local API test request",
+  "description": "Checking ticket creation through the local SupportIQ API.",
+  "category": "Other",
+  "priority": "normal"
+}

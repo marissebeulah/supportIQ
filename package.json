@@ -1,0 +1,40 @@
+{
+  "name": "supportiq",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "SupportIQ — official customer support platform with customer, IT support, and admin monitoring portals.",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:https": "node scripts/dev-https.mjs",
+    "build": "tsc --noEmit && vite build",
+    "test": "node --test",
+    "build:agent": "node scripts/build-agent.mjs",
+    "install:agent": "node scripts/install-agent.mjs",
+    "start": "node server/index.js",
+    "db:migrate": "node scripts/migrate.mjs",
+    "db:reset": "node scripts/reset-db.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/dm-sans": "^5.3.0",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/nunito-sans": "^5.3.0",
+    "@fontsource/instrument-serif": "^5.3.0",
+    "@fontsource/lora": "^5.3.0",
+    "express": "^5.3.0",
+    "lucide-react": "^1.67.0",
+    "mariadb": "^3.5.4",
+    "multer": "^2.5.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router-dom": "^7.18.5",
+    "sql.js": "^1.16.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.2.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5"
+  }
+}

@@ -1,0 +1,70 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "shell",
+            "label": "supportiq-api: npm install",
+            "command": "npm.cmd install",
+            "problemMatcher": [],
+            "runOptions": {
+                "instanceLimit": 1,
+                "instancePolicy": "silent"
+            }
+        },
+        {
+            "type": "shell",
+            "label": "supportiq-api: start",
+            "command": "node --inspect=9229 server/index.js",
+            "isBackground": true,
+            "dependsOn": "supportiq-api: npm install",
+            "problemMatcher": {
+                "owner": "supportiq-api",
+                "pattern": {
+                    "regexp": "^$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "SupportIQ API listening on",
+                    "endsPattern": "SupportIQ API listening on http://localhost:3001"
+                }
+            },
+            "runOptions": {
+                "instanceLimit": 1,
+                "instancePolicy": "silent"
+            }
+        },
+        {
+            "type": "shell",
+            "label": "supportiq-web-portal: dev",
+            "command": "node node_modules/vite/bin/vite.js",
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "vite",
+                "pattern": {
+                    "regexp": "^$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": "VITE",
+                    "endsPattern": "Local:"
+                }
+            },
+            "runOptions": {
+                "instanceLimit": 1,
+                "instancePolicy": "silent"
+            }
+        },
+        {
+            "label": "debug-all-services: start",
+            "dependsOn": [
+                "supportiq-api: start",
+                "supportiq-web-portal: dev"
+            ],
+            "dependsOrder": "sequence",
+            "runOptions": {
+                "instanceLimit": 1,
+                "instancePolicy": "silent"
+            }
+        }
+    ]
+}

@@ -1,0 +1,32 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "SupportIQ Web Portal (debug)",
+            "type": "chrome",
+            "request": "launch",
+            "url": "http://localhost:5173",
+            "webRoot": "${workspaceFolder}",
+            "preLaunchTask": "supportiq-web-portal: dev"
+        },
+        {
+            "name": "SupportIQ API (debug)",
+            "type": "node",
+            "request": "attach",
+            "port": 9229,
+            "restart": true,
+            "preLaunchTask": "supportiq-api: start"
+        }
+    ],
+    "compounds": [
+        {
+            "name": "Debug All Services",
+            "configurations": [
+                "SupportIQ API (debug)",
+                "SupportIQ Web Portal (debug)"
+            ],
+            "preLaunchTask": "debug-all-services: start",
+            "stopAll": true
+        }
+    ]
+}

@@ -1,0 +1,8 @@
+ALTER TABLE tickets
+  ALTER COLUMN description SET DEFAULT '';
+
+ALTER TABLE messages
+  ALTER COLUMN body SET DEFAULT '';
+
+ALTER TABLE kb_entries
+  ALTER COLUMN keywords SET DEFAULT '';
