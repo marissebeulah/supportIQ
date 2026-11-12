@@ -408,6 +408,25 @@ namespace SupportIQ
             _statusLabel.ForeColor = live ? Color.FromArgb(21, 128, 61) : Color.FromArgb(71, 85, 105);
         }
 
+        /// <summary>
+        /// NotifyIcon.Text is limited to 63 characters. A long ticket reference
+        /// must be shortened instead of throwing and silently killing capture.
+        /// </summary>
+        private void SetTrayText(string text)
+        {
+            if (_tray == null) return;
+            try
+            {
+                string value = string.IsNullOrEmpty(text) ? "SupportIQ Agent" : text;
+                if (value.Length > 63) value = value.Substring(0, 60) + "...";
+                _tray.Text = value;
+            }
+            catch
+            {
+                // A tooltip must never break the agent.
+            }
+        }
+
         private void Ui(MethodInvoker action)
         {
             try
@@ -757,28 +776,28 @@ namespace SupportIQ
             string requester = RequesterName(session);
             string ticket = Json.GetString(session, "ticketRef") ?? "";
             Log.Write("Session " + id + " is active for " + requester);
-            if (!string.IsNullOrEmpty(ticket))
-            {
-                _tray.Text = "SupportIQ Agent — session for " + ticket;
-            }
+
+            // Start sharing first. Tray/UI updates must never be able to stop a
+            // session from streaming; a long ticket ref used to throw here and
+            // left the technician with input but a black screen.
+            SetTrayText(!string.IsNullOrEmpty(ticket) ? "SupportIQ Agent - session for " + ticket : "SupportIQ Agent");
+            Thread capture = new Thread(new ThreadStart(delegate { CaptureLoop(id); }));
+            capture.IsBackground = true;
+            capture.Start();
+            _captureThread = capture;
 
             Ui(delegate
             {
                 SetStatus("Remote session active — " + requester + " is connected", true);
                 ShowActiveBar(requester);
             });
-
-            Thread capture = new Thread(new ThreadStart(delegate { CaptureLoop(id); }));
-            capture.IsBackground = true;
-            capture.Start();
-            _captureThread = capture;
         }
 
         private void EndActive()
         {
             long id = Interlocked.Exchange(ref _activeSessionId, 0);
             if (id == 0) return;
-            _tray.Text = "SupportIQ Agent";
+            SetTrayText("SupportIQ Agent");
             Ui(delegate
             {
                 if (_bar != null)
@@ -827,6 +846,7 @@ namespace SupportIQ
         {
             long sequence = 0;
             long quality = 60;
+            DateTime lastDiagnostic = DateTime.MinValue;
             while (_running && Interlocked.Read(ref _activeSessionId) == id)
             {
                 Stopwatch watch = Stopwatch.StartNew();
@@ -845,7 +865,22 @@ namespace SupportIQ
                             else
                             {
                                 _api.PostFrame(id, jpeg, frame.Width, frame.Height, ++sequence);
+                                if (sequence == 1)
+                                {
+                                    Log.Write(
+                                        "Sharing screen: " + frame.Width + "x" + frame.Height +
+                                        " " + jpeg.Length + " bytes");
+                                }
                             }
+                        }
+                    }
+                    else
+                    {
+                        // A missing frame usually means the desktop denied GDI access.
+                        if ((DateTime.UtcNow - lastDiagnostic).TotalSeconds >= 10)
+                        {
+                            lastDiagnostic = DateTime.UtcNow;
+                            Log.Write("Screen capture returned no frame.");
                         }
                     }
                 }
@@ -861,10 +896,21 @@ namespace SupportIQ
                         EndActive();
                         return;
                     }
+                    if ((DateTime.UtcNow - lastDiagnostic).TotalSeconds >= 10)
+                    {
+                        lastDiagnostic = DateTime.UtcNow;
+                        Log.Write("Frame upload failed: " + error.Status + " " + error.Message);
+                    }
                 }
-                catch
+                catch (Exception error)
                 {
-                    // Transient capture/network errors keep the session alive.
+                    // Transient capture/network errors keep the session alive, but a
+                    // persistent one has to be visible in the agent log.
+                    if ((DateTime.UtcNow - lastDiagnostic).TotalSeconds >= 10)
+                    {
+                        lastDiagnostic = DateTime.UtcNow;
+                        Log.Write("Screen capture failed: " + error);
+                    }
                 }
                 int delay = FrameIntervalMs - (int)watch.ElapsedMilliseconds;
                 if (delay > 0) Sleep(delay);
