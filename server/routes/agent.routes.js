@@ -502,6 +502,10 @@ function findPairingCode(rawCode) {
 function installerScript(serverUrl, code) {
   const server = String(serverUrl).replace(/[^A-Za-z0-9._:\/-]/g, "");
   const pairingCode = normalizePairingCode(code);
+  // The LAN dev server uses a self-signed certificate. The installer downloads
+  // the agent before it is paired, so it must accept that certificate; the
+  // short-lived pairing code is the capability that protects the download.
+  const insecure = server.startsWith("https://") ? " -k" : "";
   return [
     "@echo off",
     "setlocal EnableExtensions",
@@ -528,11 +532,11 @@ function installerScript(serverUrl, code) {
     "echo Downloading the agent from %SERVER% ...",
     "where curl.exe >nul 2>&1",
     "if errorlevel 1 goto download_powershell",
-    'curl.exe -fsSL --retry 2 "%SERVER%/api/agent/download-by-code?code=%CODE%" -o "%TMP_EXE%"',
+    `curl.exe -fsSL${insecure} --retry 2 "%SERVER%/api/agent/download-by-code?code=%CODE%" -o "%TMP_EXE%"`,
     "goto check_download",
     "",
     ":download_powershell",
-    `powershell -NoProfile -ExecutionPolicy Bypass -Command "try { Invoke-WebRequest -UseBasicParsing -Uri '%SERVER%/api/agent/download-by-code?code=%CODE%' -OutFile '%TMP_EXE%' } catch { exit 1 }"`,
+    `powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }; try { Invoke-WebRequest -UseBasicParsing -Uri '%SERVER%/api/agent/download-by-code?code=%CODE%' -OutFile '%TMP_EXE%' } catch { exit 1 }"`,
     "",
     ":check_download",
     "if errorlevel 1 goto download_failed",

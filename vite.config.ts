@@ -51,6 +51,9 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:3001",
         changeOrigin: false,
+        // Tell the API this browser request arrived over HTTPS so the agent
+        // installer and server-address hint use the right scheme and port.
+        headers: useHttps ? { "x-forwarded-proto": "https" } : undefined,
       },
     },
   },

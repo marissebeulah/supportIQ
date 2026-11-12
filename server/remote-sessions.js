@@ -201,17 +201,19 @@ export function agentServerUrl(req) {
   const apiPort = Number(process.env.PORT) || 3001;
   // When the request comes through the HTTPS dev server, keep the secure origin
   // so the native agent (and the browser) can reach the API without opening
-  // the API port on the firewall.
+  // the API port on the firewall. Vite sets x-forwarded-proto in HTTPS mode;
+  // port 5174 is kept for anyone still running the old HTTPS dev port.
   const forwardedProto = String(req.headers["x-forwarded-proto"] || "").toLowerCase();
   const secure =
     forwardedProto === "https" ||
     req.protocol === "https" ||
+    req.secure === true ||
     port === 5174;
   const scheme = secure ? "https" : "http";
   // The Vite dev server proxies /api, but the native agent needs the API port.
   if (!port || port === 5173 || port === 5174) {
     if (secure) {
-      const httpsPort = port === 5173 ? 5174 : port === 0 ? 443 : port;
+      const httpsPort = port === 0 ? 443 : port;
       if (httpsPort === 443) return `https://${hostname}`;
       return `https://${hostname}:${httpsPort}`;
     }

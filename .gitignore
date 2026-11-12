@@ -1,7 +1,8 @@
 node_modules/
 dist/
-data/
 .env
+data/*.db-shm
+data/*.db-wal
 .certs/
 *.log
 agent/build/

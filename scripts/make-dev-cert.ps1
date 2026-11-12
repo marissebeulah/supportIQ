@@ -9,7 +9,7 @@ $cerPath = Join-Path $certDir 'dev.cer'
 $password = ConvertTo-SecureString -String 'supportiq-dev' -Force -AsPlainText
 
 # Include localhost plus every LAN IPv4 address so other devices on the network
-# can open https://<this-computer-ip>:5174 without a name mismatch.
+# can open https://<this-computer-ip>:5173 without a name mismatch.
 $ips = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
   Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
   Select-Object -ExpandProperty IPAddress -Unique

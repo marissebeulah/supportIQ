@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:https": "node scripts/dev-https.mjs",
+    "firewall:open": "powershell -ExecutionPolicy Bypass -File scripts/open-firewall.ps1",
     "build": "tsc --noEmit && vite build",
     "test": "node --test",
     "build:agent": "node scripts/build-agent.mjs",

@@ -167,7 +167,7 @@ export function callSecureContext() {
       (window.isSecureContext && Boolean(navigator.mediaDevices?.getUserMedia)),
     origin,
     localUrl: "http://localhost:5173",
-    httpsUrl: `https://${host}:5174`,
+    httpsUrl: `https://${host}:5173`,
   };
 }
 

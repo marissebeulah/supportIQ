@@ -121,6 +121,8 @@ The backend is an **Express.js** API (Node.js) that can use either **SQLite** (d
 | Command | Description |
 |---------|-------------|
 | `npm run dev` | Starts Vite + Express in development mode (hot‑reload for front‑end, nodemon‑like for back‑end). |
+| `npm run dev:https` | Same, but serves the app over HTTPS on port **5173** so camera, microphone, calls, and remote support work from other devices on the LAN. |
+| `npm run firewall:open` | Adds Windows Firewall inbound rules for ports 5173 and 3001 (run once from an elevated terminal). |
 | `npm start` | Production build – first run `npm run build` then `node server/index.js`. |
 | `npm run build` | Compile TypeScript and bundle the React app into `dist/`. |
 | `npm test` | Run the Jest test suite. |
@@ -128,6 +130,38 @@ The backend is an **Express.js** API (Node.js) that can use either **SQLite** (d
 | `npm run db:reset` | Reset the SQLite database (drops and recreates `supportiq.db`). |
 
 ---
+
+## LAN access, calls, and remote support
+
+To use SupportIQ from another device on the same network:
+
+1. Start the HTTPS server (it replaces `npm run dev` on port 5173):
+
+   ```bash
+   npm run dev:https
+   ```
+
+   The console prints `Local: https://localhost:5173` and `Network: https://<LAN-IP>:5173`.
+
+2. On the first visit the browser warns about the self-signed development
+   certificate. Choose **Advanced → Proceed**, or install `.certs/dev.cer`
+   once on that device. The same file is served at `/dev-cert.cer`.
+
+3. If other devices cannot connect, open Windows Firewall once from an
+   **elevated** PowerShell:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts/open-firewall.ps1
+   ```
+
+4. Voice and video calls require HTTPS (or localhost); they will not work over
+   `http://<LAN-IP>:5173`. Both participants must be signed in and online.
+
+5. Remote desktop control uses the native **SupportIQ Agent**, not the browser
+   alone. On the customer's Windows PC, open the request, click **Set up this
+   PC**, run the installer, and leave the agent in the tray. IT can then request
+   a session from the same request page. Phones and devices without the agent
+   can be called, but cannot be remote-controlled.
 
 ## Database
 

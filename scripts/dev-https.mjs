@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import os from "node:os";
 
 const API_PORT = process.env.PORT || "3001";
-const VITE_PORT = process.env.VITE_PORT || "5174";
+const VITE_PORT = process.env.VITE_PORT || "5173";
 
 const children = [];
 let shuttingDown = false;
@@ -78,7 +78,7 @@ function lanAddresses() {
 
 if (!(await apiResponding())) {
   console.log(`[api] starting on port ${API_PORT}`);
-  run("api", ["server/index.js"], { PORT: API_PORT, NODE_ENV: "development" });
+  run("api", ["--watch", "server/index.js"], { PORT: API_PORT, NODE_ENV: "development" });
 }
 
 run("web", ["node_modules/vite/bin/vite.js", "--port", VITE_PORT, "--strictPort"], {
@@ -92,4 +92,5 @@ for (const address of lanAddresses()) {
   console.log(`  LAN:   https://${address}:${VITE_PORT}`);
 }
 console.log("  If the browser warns about the certificate, trust .certs/dev.cer once.");
+console.log("  If another device can't connect, run scripts/open-firewall.ps1 as administrator.");
 console.log("");
