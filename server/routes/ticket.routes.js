@@ -14,6 +14,7 @@ import {
 import { formatHours, renderTemplate } from "../format.js";
 import { canAccessTicket, getTicketDetail, listTickets } from "../serialize.js";
 import { publish, ticketAudience } from "../realtime.js";
+import { createNotification, readRequestNotification } from "../notifications.js";
 import { firstMatchingCondition } from "../routing.js";
 import { inferProduct } from "../products.js";
 import { inspectMessage } from "../moderation.js";
@@ -104,10 +105,18 @@ function transaction(work) {
 
 function notifyTicket(ticketId, type = "ticket:updated") {
   const ticket = db
-    .prepare("SELECT id, customer_id, assignee_id FROM tickets WHERE id = ?")
+    .prepare("SELECT id, customer_id, assignee_id, co_assignee_id FROM tickets WHERE id = ?")
     .get(ticketId);
   if (!ticket) return;
-  publish(type, { ticketId }, ticketAudience({ customerId: ticket.customer_id, assigneeId: ticket.assignee_id }));
+  publish(
+    type,
+    { ticketId },
+    ticketAudience({
+      customerId: ticket.customer_id,
+      assigneeId: ticket.assignee_id,
+      coAssigneeId: ticket.co_assignee_id,
+    }),
+  );
 }
 
 function notifyAdminsHelpRequest(ticketId, agentName, reason) {
@@ -700,6 +709,299 @@ router.patch("/tickets/:id/assign", requireRole("admin"), (req, res) => {
 
   notifyTicket(ticket.id);
   return respondWithTicket(res, ticket.id);
+});
+
+function addCoHelperActivity(ticketId, actorId, from, to) {
+  db.prepare(
+    `INSERT INTO activity (ticket_id, actor_id, type, from_value, to_value, created_at)
+     VALUES (?, ?, 'co_helper', ?, ?, ?)`,
+  ).run(ticketId, actorId, from, to, nowIso());
+}
+
+function activeItTechnicians(excludeIds = []) {
+  const rows = db.prepare("SELECT id, name FROM users WHERE role = 'it' AND active = 1 ORDER BY name").all();
+  return rows.filter((row) => !excludeIds.includes(row.id));
+}
+
+// Admins can place a second technician on a ticket directly. The assigned
+// technician can also clear the co-helper once the work is done.
+router.patch("/tickets/:id/co-assignee", requireRole("it", "admin"), (req, res) => {
+  const ticket = loadTicket(req, res);
+  if (!ticket) return;
+
+  const raw = req.body?.coAssigneeId;
+  const cleared = raw === null || raw === undefined || raw === "";
+  const agentId = cleared ? null : parseId(raw);
+  if (!cleared && !agentId) {
+    return fail(res, 400, "Choose a valid co-helper technician.");
+  }
+  if (agentId && req.user.role !== "admin") {
+    return fail(res, 403, "Only an admin can add a co-helper directly.");
+  }
+  if (
+    cleared &&
+    req.user.role !== "admin" &&
+    ticket.assignee_id !== req.user.id
+  ) {
+    return fail(res, 403, "Only the assigned technician can remove the co-helper.");
+  }
+  if (agentId && agentId === ticket.assignee_id) {
+    return fail(res, 400, "The co-helper must be a different technician than the assignee.");
+  }
+
+  let agent = null;
+  if (agentId) {
+    agent = db
+      .prepare("SELECT id, name FROM users WHERE id = ? AND role = 'it' AND active = 1")
+      .get(agentId);
+    if (!agent) return fail(res, 400, "That technician is not available.");
+  }
+
+  const previous = ticket.co_assignee_id
+    ? db.prepare("SELECT name FROM users WHERE id = ?").get(ticket.co_assignee_id)
+    : null;
+  const now = nowIso();
+
+  transaction(() => {
+    db.prepare("UPDATE tickets SET co_assignee_id = ?, updated_at = ? WHERE id = ?").run(
+      agentId,
+      now,
+      ticket.id,
+    );
+    addCoHelperActivity(ticket.id, req.user.id, previous?.name ?? null, agent?.name ?? null);
+    if (agentId) {
+      db.prepare(
+        "UPDATE co_helper_requests SET status = 'cancelled', responded_at = ? WHERE ticket_id = ? AND status = 'pending'",
+      ).run(now, ticket.id);
+    }
+  });
+
+  if (agent) {
+    createNotification({
+      userId: agent.id,
+      type: "co_helper_added",
+      title: `${req.user.name} added you as co-helper`,
+      body: `${ticket.ref} · ${ticket.subject}`,
+      ticketId: ticket.id,
+    });
+  }
+
+  notifyTicket(ticket.id);
+  return respondWithTicket(res, ticket.id);
+});
+
+// The assigned technician asks a teammate (or the whole team) to help.
+router.post("/tickets/:id/co-helper", requireRole("it"), (req, res) => {
+  const ticket = loadTicket(req, res);
+  if (!ticket) return;
+  if (ticket.assignee_id !== req.user.id) {
+    return fail(res, 403, "Only the assigned technician can ask for a co-helper.");
+  }
+  if (["resolved", "closed"].includes(ticket.status)) {
+    return fail(res, 409, "Ask for a co-helper while the request is still active.");
+  }
+  if (ticket.co_assignee_id) {
+    return fail(res, 409, "This request already has a co-helper.");
+  }
+  const pending = db
+    .prepare("SELECT id FROM co_helper_requests WHERE ticket_id = ? AND status = 'pending' LIMIT 1")
+    .get(ticket.id);
+  if (pending) {
+    return fail(res, 409, "A co-helper request is already waiting for a response.");
+  }
+
+  const raw = req.body?.targetId;
+  const broadcast = raw === null || raw === undefined || raw === "";
+  const targetId = broadcast ? null : parseId(raw);
+  if (!broadcast && !targetId) return fail(res, 400, "Choose a valid technician.");
+  if (targetId === req.user.id) return fail(res, 400, "Pick a different technician to help you.");
+
+  const target = targetId
+    ? db.prepare("SELECT id, name FROM users WHERE id = ? AND role = 'it' AND active = 1").get(targetId)
+    : null;
+  if (targetId && !target) return fail(res, 400, "That technician is not available.");
+
+  const note = cleanText(req.body?.note, 300) || null;
+  const now = nowIso();
+  const recipients = target
+    ? [target]
+    : activeItTechnicians([req.user.id, ticket.assignee_id].filter(Boolean));
+
+  if (recipients.length === 0) {
+    return fail(res, 409, "No other technicians are available right now.");
+  }
+
+  const info = db
+    .prepare(
+      `INSERT INTO co_helper_requests (ticket_id, requester_id, target_id, status, note, created_at)
+       VALUES (?, ?, ?, 'pending', ?, ?)`,
+    )
+    .run(ticket.id, req.user.id, targetId, note, now);
+  const requestId = Number(info.lastInsertRowid);
+
+  db.prepare(
+    `INSERT INTO activity (ticket_id, actor_id, type, to_value, note, created_at)
+     VALUES (?, ?, 'co_helper_request', ?, ?, ?)`,
+  ).run(ticket.id, req.user.id, target?.name ?? null, note, now);
+
+  for (const recipient of recipients) {
+    createNotification({
+      userId: recipient.id,
+      type: "co_helper_request",
+      title: `${req.user.name} needs a co-helper`,
+      body: note ? `${ticket.ref} · ${ticket.subject}\n${note}` : `${ticket.ref} · ${ticket.subject}`,
+      ticketId: ticket.id,
+      requestId,
+    });
+  }
+
+  publish(
+    "co-helper:request",
+    {
+      ticketId: ticket.id,
+      requestId,
+      ref: ticket.ref,
+      subject: ticket.subject,
+      requesterName: req.user.name,
+      note,
+    },
+    (user) => user.role === "admin" || recipients.some((recipient) => recipient.id === user.id),
+  );
+
+  notifyTicket(ticket.id);
+  return respondWithTicket(res, ticket.id);
+});
+
+router.post("/co-helper-requests/:id/cancel", requireRole("it", "admin"), (req, res) => {
+  const id = parseId(req.params.id);
+  const request = id
+    ? db.prepare("SELECT * FROM co_helper_requests WHERE id = ?").get(id)
+    : null;
+  if (!request) return fail(res, 404, "That co-helper request wasn't found.");
+  if (request.status !== "pending") return fail(res, 409, "This request is no longer open.");
+  if (req.user.role !== "admin" && request.requester_id !== req.user.id) {
+    return fail(res, 403, "Only the technician who asked can cancel this request.");
+  }
+
+  const now = nowIso();
+  db.prepare(
+    "UPDATE co_helper_requests SET status = 'cancelled', responded_at = ?, responder_id = ? WHERE id = ?",
+  ).run(now, req.user.id, request.id);
+
+  const targets = request.target_id
+    ? [request.target_id]
+    : activeItTechnicians([request.requester_id]).map((row) => row.id);
+  for (const userId of targets) readRequestNotification(userId, request.id);
+
+  notifyTicket(request.ticket_id);
+  return respondWithTicket(res, request.ticket_id);
+});
+
+router.post("/co-helper-requests/:id/accept", requireRole("it"), (req, res) => {
+  const id = parseId(req.params.id);
+  const request = id
+    ? db.prepare("SELECT * FROM co_helper_requests WHERE id = ?").get(id)
+    : null;
+  if (!request) return fail(res, 404, "That co-helper request wasn't found.");
+  if (request.status !== "pending") {
+    return fail(
+      res,
+      409,
+      request.status === "accepted"
+        ? "This request was already accepted."
+        : "This co-helper request is no longer open.",
+    );
+  }
+  if (request.requester_id === req.user.id) {
+    return fail(res, 403, "You asked for help — a teammate needs to accept.");
+  }
+  if (request.target_id != null && request.target_id !== req.user.id) {
+    return fail(res, 403, "This request was sent to another technician.");
+  }
+
+  const ticket = db.prepare("SELECT * FROM tickets WHERE id = ?").get(request.ticket_id);
+  if (!ticket) return fail(res, 404, "Request not found.");
+  if (["resolved", "closed"].includes(ticket.status)) {
+    return fail(res, 409, "This request is already resolved, so a co-helper isn't needed.");
+  }
+  if (ticket.assignee_id === req.user.id) {
+    return fail(res, 409, "You are already the assigned technician on this request.");
+  }
+  if (ticket.co_assignee_id && ticket.co_assignee_id !== req.user.id) {
+    return fail(res, 409, "This request already has a co-helper.");
+  }
+
+  const now = nowIso();
+  transaction(() => {
+    db.prepare(
+      "UPDATE co_helper_requests SET status = 'accepted', responder_id = ?, responded_at = ? WHERE id = ?",
+    ).run(req.user.id, now, request.id);
+    db.prepare(
+      `UPDATE co_helper_requests SET status = 'cancelled', responded_at = ?
+       WHERE ticket_id = ? AND status = 'pending' AND id <> ?`,
+    ).run(now, ticket.id, request.id);
+    db.prepare("UPDATE tickets SET co_assignee_id = ?, updated_at = ? WHERE id = ?").run(
+      req.user.id,
+      now,
+      ticket.id,
+    );
+    addCoHelperActivity(ticket.id, req.user.id, null, req.user.name);
+  });
+
+  readRequestNotification(req.user.id, request.id);
+  createNotification({
+    userId: request.requester_id,
+    type: "co_helper_accepted",
+    title: `${req.user.name} accepted your co-helper request`,
+    body: `${ticket.ref} · ${ticket.subject}`,
+    ticketId: ticket.id,
+    requestId: request.id,
+  });
+
+  notifyTicket(ticket.id);
+  return respondWithTicket(res, ticket.id);
+});
+
+router.post("/co-helper-requests/:id/decline", requireRole("it"), (req, res) => {
+  const id = parseId(req.params.id);
+  const request = id
+    ? db.prepare("SELECT * FROM co_helper_requests WHERE id = ?").get(id)
+    : null;
+  if (!request) return fail(res, 404, "That co-helper request wasn't found.");
+  if (request.status !== "pending") return fail(res, 409, "This co-helper request is no longer open.");
+  if (request.requester_id === req.user.id) {
+    return fail(res, 403, "You can't decline your own co-helper request.");
+  }
+  if (request.target_id != null && request.target_id !== req.user.id) {
+    return fail(res, 403, "This request was sent to another technician.");
+  }
+
+  const ticket = db.prepare("SELECT * FROM tickets WHERE id = ?").get(request.ticket_id);
+  if (!ticket) return fail(res, 404, "Request not found.");
+
+  const now = nowIso();
+  readRequestNotification(req.user.id, request.id);
+
+  createNotification({
+    userId: request.requester_id,
+    type: "co_helper_declined",
+    title: `${req.user.name} can't help right now`,
+    body: `${ticket.ref} · ${ticket.subject}`,
+    ticketId: ticket.id,
+    requestId: request.id,
+  });
+
+  // A broadcast request stays open so another technician can still accept.
+  if (request.target_id == null) {
+    publish("ticket:updated", { ticketId: ticket.id }, (user) => user.role === "admin");
+    return res.json({ ok: true, requestOpen: true });
+  }
+
+  db.prepare(
+    "UPDATE co_helper_requests SET status = 'declined', responder_id = ?, responded_at = ? WHERE id = ?",
+  ).run(req.user.id, now, request.id);
+  notifyTicket(ticket.id);
+  return res.json({ ok: true, requestOpen: false });
 });
 
 router.post("/tickets/:id/request-admin", requireRole("it"), (req, res) => {

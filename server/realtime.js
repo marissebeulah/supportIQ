@@ -33,11 +33,12 @@ export function isUserOnline(userId) {
   return false;
 }
 
-export function ticketAudience({ customerId, assigneeId }) {
+export function ticketAudience({ customerId, assigneeId, coAssigneeId = null }) {
   return (user) =>
     user.role === "admin" ||
     user.id === customerId ||
-    (assigneeId != null && user.id === assigneeId);
+    (assigneeId != null && user.id === assigneeId) ||
+    (coAssigneeId != null && user.id === coAssigneeId);
 }
 
 export function clientCount() {

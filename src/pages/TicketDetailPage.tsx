@@ -22,6 +22,8 @@ import {
   PhoneMissed,
   PhoneOutgoing,
   ShieldCheck,
+  UserMinus,
+  UserPlus,
   Video,
   X,
 } from "lucide-react";
@@ -177,6 +179,81 @@ export default function TicketDetailPage({ portal }: { portal: PortalKey }) {
       "assign",
       assigneeId ? "Request assigned." : "Assignment cleared.",
     );
+  };
+
+  const setCoHelper = (coAssigneeId: number | null) => {
+    void patchTicket(
+      "co-assignee",
+      { coAssigneeId },
+      "co-helper",
+      coAssigneeId ? "Co-helper added to this request." : "Co-helper removed.",
+    );
+  };
+
+  const requestCoHelper = async (targetId: number | null) => {
+    if (busy) return;
+    setBusy("co-helper-request");
+    try {
+      const response = await api.post<TicketDetailResponse>(`/api/tickets/${ticketId}/co-helper`, {
+        targetId,
+      });
+      apply(response);
+      toast(
+        targetId ? "Co-helper request sent — they've been notified." : "Help request sent to the IT team.",
+        "info",
+      );
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const respondToCoHelper = async (accept: boolean) => {
+    const request = ticket?.coHelperRequest;
+    if (!request) return;
+    setBusy("co-helper-respond");
+    try {
+      if (accept) {
+        const response = await api.post<TicketDetailResponse>(
+          `/api/co-helper-requests/${request.id}/accept`,
+        );
+        apply(response);
+        toast("You joined as co-helper. You can now reply to the customer.", "success");
+      } else {
+        const result = await api.post<{ requestOpen?: boolean }>(
+          `/api/co-helper-requests/${request.id}/decline`,
+        );
+        toast(
+          result.requestOpen
+            ? "Passed — another technician can still pick it up."
+            : "Co-helper request declined.",
+          "info",
+        );
+        navigate("/agent/queue");
+      }
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const cancelCoHelperRequest = async () => {
+    const request = ticket?.coHelperRequest;
+    if (!request) return;
+    setBusy("co-helper-cancel");
+    try {
+      const response = await api.post<TicketDetailResponse>(
+        `/api/co-helper-requests/${request.id}/cancel`,
+      );
+      apply(response);
+      toast("Co-helper request cancelled.", "info");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(null);
+    }
   };
 
   const changeProduct = (value: string) => {
@@ -360,6 +437,9 @@ export default function TicketDetailPage({ portal }: { portal: PortalKey }) {
           ) : (
             <span className="dot-sep">Not yet assigned</span>
           )}
+          {ticket.coAssignee ? (
+            <span className="dot-sep">Co-helper {ticket.coAssignee.name}</span>
+          ) : null}
         </p>
         <CallActions ticket={ticket} />
       </header>
@@ -384,7 +464,59 @@ export default function TicketDetailPage({ portal }: { portal: PortalKey }) {
             </div>
           ) : null}
 
-          <RemoteSupportPanel ticket={ticket} />
+          {ticket.coHelperRequest &&
+          (ticket.coHelperRequest.canRespond || ticket.coHelperRequest.canCancel) ? (
+            <div className={`cohelper-banner ${ticket.coHelperRequest.canRespond ? "is-invite" : ""}`.trim()}>
+              <UserPlus size={17} />
+              <div className="cohelper-copy">
+                <p className="cohelper-head">
+                  {ticket.coHelperRequest.canRespond
+                    ? `${ticket.coHelperRequest.requester.name} needs a co-helper`
+                    : ticket.coHelperRequest.target
+                      ? `Waiting for ${ticket.coHelperRequest.target.name} to accept`
+                      : "Waiting for a teammate to accept"}
+                </p>
+                {ticket.coHelperRequest.note ? (
+                  <p className="cohelper-note">{ticket.coHelperRequest.note}</p>
+                ) : null}
+                <p className="small muted">
+                  {ticket.coHelperRequest.canRespond
+                    ? "Accept to share this request — you'll be able to reply to the customer too."
+                    : `${ticket.coHelperRequest.target ? ticket.coHelperRequest.target.name : "The team"} was notified ${relativeTime(ticket.coHelperRequest.createdAt)}.`}
+                </p>
+              </div>
+              {ticket.coHelperRequest.canRespond ? (
+                <div className="row" style={{ gap: 8 }}>
+                  <Button
+                    size="sm"
+                    onClick={() => void respondToCoHelper(true)}
+                    loading={busy === "co-helper-respond"}
+                  >
+                    <CircleCheck size={14} /> Accept
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => void respondToCoHelper(false)}
+                    disabled={busy !== null}
+                  >
+                    <CircleX size={14} /> Decline
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void cancelCoHelperRequest()}
+                  loading={busy === "co-helper-cancel"}
+                >
+                  Cancel request
+                </Button>
+              )}
+            </div>
+          ) : null}
+
+          <RemoteSupportPanel ticket={ticket} agents={detail.data?.agents ?? []} />
 
           {ticket.permissions.canChangeStatus ? (
             <div className="workflow">
@@ -425,21 +557,40 @@ export default function TicketDetailPage({ portal }: { portal: PortalKey }) {
               </Field>
 
               {portal === "admin" && detail.data ? (
-                <Field label="Assignee">
-                  <Select
-                    value={ticket.assignee?.id ?? ""}
-                    onChange={(event) => assign(event.target.value ? Number(event.target.value) : null)}
-                    disabled={busy !== null}
-                    aria-label="Assign request"
-                  >
-                    <option value="">Unassigned</option>
-                    {detail.data.agents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
+                <>
+                  <Field label="Assignee">
+                    <Select
+                      value={ticket.assignee?.id ?? ""}
+                      onChange={(event) => assign(event.target.value ? Number(event.target.value) : null)}
+                      disabled={busy !== null}
+                      aria-label="Assign request"
+                    >
+                      <option value="">Unassigned</option>
+                      {detail.data.agents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                          {agent.name}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field label="Second assignee (optional)">
+                    <Select
+                      value={ticket.coAssignee?.id ?? ""}
+                      onChange={(event) => setCoHelper(event.target.value ? Number(event.target.value) : null)}
+                      disabled={busy !== null || !ticket.permissions.canAssignCoHelper}
+                      aria-label="Assign co-helper"
+                    >
+                      <option value="">No co-helper</option>
+                      {detail.data.agents
+                        .filter((agent) => agent.id !== ticket.assignee?.id)
+                        .map((agent) => (
+                          <option key={agent.id} value={agent.id}>
+                            {agent.name}
+                          </option>
+                        ))}
+                    </Select>
+                  </Field>
+                </>
               ) : null}
 
               {ticket.permissions.canChangeProduct ? (
@@ -461,6 +612,48 @@ export default function TicketDetailPage({ portal }: { portal: PortalKey }) {
               ) : null}
 
               <div className="workflow-actions">
+                {ticket.coAssignee && ticket.permissions.canRemoveCoHelper && portal !== "admin" ? (
+                  <Button
+                    variant="soft"
+                    size="sm"
+                    onClick={() => setCoHelper(null)}
+                    loading={busy === "co-helper"}
+                  >
+                    <UserMinus size={14} /> Remove co-helper
+                  </Button>
+                ) : null}
+                {ticket.permissions.canRequestCoHelper && detail.data ? (
+                  <details className="canned-menu">
+                    <summary className="btn btn-soft btn-sm">
+                      <UserPlus size={14} /> Need a co-helper
+                    </summary>
+                    <div className="canned-pop">
+                      <button
+                        type="button"
+                        className="canned-item"
+                        disabled={busy !== null}
+                        onClick={() => void requestCoHelper(null)}
+                      >
+                        <strong>Ask the whole IT team</strong>
+                        <span>Any available technician can pick it up.</span>
+                      </button>
+                      {detail.data.agents
+                        .filter((agent) => agent.id !== ticket.assignee?.id)
+                        .map((agent) => (
+                          <button
+                            key={agent.id}
+                            type="button"
+                            className="canned-item"
+                            disabled={busy !== null}
+                            onClick={() => void requestCoHelper(agent.id)}
+                          >
+                            <strong>{agent.name}</strong>
+                            <span>{agent.title ?? "IT technician"}</span>
+                          </button>
+                        ))}
+                    </div>
+                  </details>
+                ) : null}
                 {ticket.permissions.canRequestAdminHelp ? (
                   <Button
                     variant="soft"
@@ -683,6 +876,12 @@ export default function TicketDetailPage({ portal }: { portal: PortalKey }) {
                   <dt>Agent</dt>
                   <dd>{ticket.assignee?.name ?? "Not assigned"}</dd>
                 </div>
+                {ticket.coAssignee ? (
+                  <div className="detail-row">
+                    <dt>Co-helper</dt>
+                    <dd>{ticket.coAssignee.name}</dd>
+                  </div>
+                ) : null}
                 <div className="detail-row">
                   <dt>Opened</dt>
                   <dd>{formatDateTime(ticket.createdAt)}</dd>

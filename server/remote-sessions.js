@@ -14,6 +14,7 @@ const sessionSelect = `
     requester.name AS requester_name, requester.role AS requester_role,
     customer.name AS customer_name, customer.role AS customer_role,
     device.name AS agent_name,
+    dual.name AS dual_technician_name, dual.role AS dual_technician_role,
     EXISTS(
       SELECT 1 FROM agent_devices paired
       WHERE paired.user_id = r.customer_id AND paired.revoked_at IS NULL
@@ -23,6 +24,7 @@ const sessionSelect = `
   JOIN users requester ON requester.id = r.requested_by
   JOIN users customer ON customer.id = r.customer_id
   LEFT JOIN agent_devices device ON device.id = r.agent_device_id
+  LEFT JOIN users dual ON dual.id = r.dual_technician_id
 `;
 
 export function getSessionRow(id) {
@@ -81,6 +83,19 @@ export function serializeSession(row) {
     startedWith: row.started_with ?? null,
     // The customer's screen currently shows the privacy animation.
     privacyMode: Number(row.privacy_mode) === 1,
+    dualTechnician: row.dual_technician_id
+      ? {
+          id: row.dual_technician_id,
+          name: row.dual_technician_name ?? "Co-helper",
+          role: row.dual_technician_role ?? "it",
+        }
+      : null,
+    primaryTechnicianRating: row.primary_technician_rating ?? null,
+    primaryTechnicianRatingComment: row.primary_technician_rating_comment ?? null,
+    primaryTechnicianRatedAt: row.primary_technician_rated_at ?? null,
+    dualTechnicianRating: row.dual_technician_rating ?? null,
+    dualTechnicianRatingComment: row.dual_technician_rating_comment ?? null,
+    dualTechnicianRatedAt: row.dual_technician_rated_at ?? null,
     expiresAt: row.expires_at,
     frame: getFrameMeta(row.id),
   };
@@ -103,11 +118,16 @@ export function serializeDevice(row) {
 
 export function audience(row) {
   return (user) =>
-    user.role === "admin" || user.id === row.customer_id || user.id === row.requested_by;
+    user.role === "admin" || user.id === row.customer_id || user.id === row.requested_by || user.id === row.dual_technician_id;
 }
 
 export function isParticipant(row, user) {
-  return user.role === "admin" || user.id === row.customer_id || user.id === row.requested_by;
+  return (
+    user.role === "admin" ||
+    user.id === row.customer_id ||
+    user.id === row.requested_by ||
+    user.id === row.dual_technician_id
+  );
 }
 
 /** Either participant (or an admin) can read the live screen. */
@@ -115,11 +135,11 @@ export function canViewScreen(row, user) {
   return isParticipant(row, user);
 }
 
-/** Only the technician who requested the session (or an admin) can drive input. */
+/** The requesting technician, a co-helper, or an admin can drive input. */
 export function canControl(row, user) {
   if (!user) return false;
   if (user.role === "admin") return true;
-  return user.role === "it" && user.id === row.requested_by;
+  return user.role === "it" && (user.id === row.requested_by || user.id === row.dual_technician_id);
 }
 
 export function closeSession(session, status, options = {}) {

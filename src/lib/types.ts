@@ -89,6 +89,7 @@ export interface TicketSummary {
   customer: TicketPerson;
   product: { id: number; name: string } | null;
   assignee: TicketPerson | null;
+  coAssignee: TicketPerson | null;
   lastMessage: { body: string; senderRole: MessageRole; createdAt: string } | null;
   unreadCount: number;
   isLate: boolean;
@@ -108,7 +109,20 @@ export interface TicketPermissions {
   canApprove: boolean;
   canReject: boolean;
   canRequestAdminHelp: boolean;
+  canRequestCoHelper: boolean;
+  canAssignCoHelper: boolean;
+  canRemoveCoHelper: boolean;
   canChangeProduct: boolean;
+}
+
+export interface CoHelperRequest {
+  id: number;
+  requester: TicketPerson;
+  target: TicketPerson | null;
+  note: string | null;
+  createdAt: string;
+  canRespond: boolean;
+  canCancel: boolean;
 }
 
 export interface TicketDetail extends TicketSummary {
@@ -118,6 +132,8 @@ export interface TicketDetail extends TicketSummary {
   ratedAt: string | null;
   customer: TicketPerson & { email: string };
   assignee: TicketPerson | null;
+  coAssignee: (TicketPerson & { email: string }) | null;
+  coHelperRequest: CoHelperRequest | null;
   messages: TicketMessage[];
   activity: TicketActivity[];
   attachments: Attachment[];
@@ -562,13 +578,47 @@ export interface RemoteSession {
   endedReason: string | null;
   startedWith: "consent" | "password" | null;
   privacyMode: boolean;
+  dualTechnician: { id: number; name: string; role: Role } | null;
+  primaryTechnicianRating: number | null;
+  primaryTechnicianRatingComment: string | null;
+  primaryTechnicianRatedAt: string | null;
+  dualTechnicianRating: number | null;
+  dualTechnicianRatingComment: string | null;
+  dualTechnicianRatedAt: string | null;
   expiresAt: string;
   frame: RemoteFrameMeta | null;
+}
+
+export interface AppNotification {
+  id: number;
+  type: string;
+  title: string;
+  body: string | null;
+  ticketId: number | null;
+  ticketRef: string | null;
+  ticketSubject: string | null;
+  requestId: number | null;
+  requestStatus: string | null;
+  requestNote: string | null;
+  requesterName: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export interface NotificationsResponse {
+  notifications: AppNotification[];
+  unread: number;
 }
 
 export interface RealtimeEvent {
   type: string;
   ticketId?: number;
+  notificationId?: number;
+  notificationType?: string;
+  title?: string;
+  requestId?: number;
+  requesterName?: string;
+  note?: string | null;
   chatId?: number;
   decision?: "approved" | "rejected";
   ref?: string;

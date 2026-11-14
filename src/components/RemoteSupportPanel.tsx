@@ -19,13 +19,20 @@ import {
   ShieldCheck,
   TriangleAlert,
   Unplug,
+  UserCheck,
   X,
 } from "lucide-react";
 import { api, errorMessage } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useApi, useRealtime } from "../lib/hooks";
 import { formatSpan, relativeTime } from "../lib/format";
-import type { AgentServerInfo, RemoteAgentDevice, RemoteSession, TicketDetail } from "../lib/types";
+import type {
+  AgentServerInfo,
+  RemoteAgentDevice,
+  RemoteSession,
+  TicketDetail,
+  TicketPerson,
+} from "../lib/types";
 import { Button, Card, ErrorNote } from "./ui";
 import { useToast } from "./toast";
 
@@ -69,11 +76,99 @@ function closedOutcome(session: RemoteSession): string {
 }
 
 /**
+ * Optional picker that lets the requesting technician pull another IT tech into
+ * the same session. Renders as a menu button so it matches the rest of the app.
+ */
+function CoHelperMenu({
+  session,
+  agents,
+  onChange,
+}: {
+  session: RemoteSession;
+  agents: TicketPerson[];
+  onChange?: () => void;
+}) {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const detailsRef = useRef<HTMLDetailsElement | null>(null);
+
+  const options = agents.filter(
+    (agent) => agent.id !== session.requestedBy.id && agent.id !== session.dualTechnician?.id,
+  );
+
+  if (!agents.length) return null;
+
+  async function add(techId: number) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const data = await api.post<{ remoteSession: RemoteSession }>(
+        `/api/remote-sessions/${session.id}/dual-tech/join`,
+        { dualTechId: techId },
+      );
+      toast(`${data.remoteSession.dualTechnician?.name ?? "Co-helper"} can now help on this session.`, "info");
+      if (detailsRef.current) detailsRef.current.open = false;
+      onChange?.();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <details className="canned-menu" ref={detailsRef}>
+      <summary
+        className="btn btn-secondary btn-sm"
+        title="Add another technician to help with this session"
+      >
+        <UserCheck size={14} /> {session.dualTechnician ? "Co-helper added" : "Add co-helper"}
+      </summary>
+      <div className="canned-pop">
+        {session.dualTechnician ? (
+          <div className="canned-item" style={{ cursor: "default" }}>
+            <strong>{session.dualTechnician.name} is helping</strong>
+            <span>They can also view and control this session.</span>
+          </div>
+        ) : options.length ? (
+          options.map((agent) => (
+            <button
+              key={agent.id}
+              type="button"
+              className="canned-item"
+              disabled={busy}
+              onClick={() => void add(agent.id)}
+            >
+              <strong>{agent.name}</strong>
+              <span>{agent.title ?? "IT technician"}</span>
+            </button>
+          ))
+        ) : (
+          <div className="canned-item" style={{ cursor: "default" }}>
+            <strong>No other technicians available</strong>
+            <span>Invite a teammate to the workspace first.</span>
+          </div>
+        )}
+        {error ? <p className="error-text" style={{ padding: "6px 9px" }}>{error}</p> : null}
+      </div>
+    </details>
+  );
+}
+
+/**
  * Ticket-scoped remote support driven by the SupportIQ Windows agent. IT asks
  * for access, the customer approves in a visible agent window, and screen
  * frames plus mouse/keyboard events flow through this app. Nothing is stored.
  */
-export function RemoteSupportPanel({ ticket }: { ticket: TicketDetail }) {
+export function RemoteSupportPanel({
+  ticket,
+  agents = [],
+}: {
+  ticket: TicketDetail;
+  agents?: TicketPerson[];
+}) {
   const { user } = useAuth();
   const { toast } = useToast();
   const isCustomer = user?.role === "customer";
@@ -323,9 +418,12 @@ export function RemoteSupportPanel({ ticket }: { ticket: TicketDetail }) {
                   : "They need to install and pair the SupportIQ Agent from this page first."}
               </p>
             </div>
-            <Button size="sm" variant="secondary" onClick={() => void endSession(open)} loading={ending}>
-              <X size={14} /> Cancel request
-            </Button>
+            <div className="row" style={{ gap: 8 }}>
+              <CoHelperMenu session={open} agents={agents} onChange={history.reload} />
+              <Button size="sm" variant="secondary" onClick={() => void endSession(open)} loading={ending}>
+                <X size={14} /> Cancel request
+              </Button>
+            </div>
           </div>
           <UnattendedConnect
             ticketId={ticket.id}
@@ -345,13 +443,18 @@ export function RemoteSupportPanel({ ticket }: { ticket: TicketDetail }) {
       );
     }
 
-    const canControl = user?.role === "admin" || open.requestedBy.id === user?.id;
+    const canControl =
+      user?.role === "admin" ||
+      open.requestedBy.id === user?.id ||
+      open.dualTechnician?.id === user?.id;
 
     return (
       <Card className="remote-card remote-card-live">
         <RemoteViewer
           session={open}
           canControl={canControl}
+          agents={agents}
+          onSessionChange={history.reload}
           onEnd={() => void endSession(open)}
           ending={ending}
         />
@@ -1083,11 +1186,15 @@ function DeviceCard({
 function RemoteViewer({
   session,
   canControl = true,
+  agents = [],
+  onSessionChange,
   onEnd,
   ending,
 }: {
   session: RemoteSession;
   canControl?: boolean;
+  agents?: TicketPerson[];
+  onSessionChange?: () => void;
   onEnd: () => void;
   ending: boolean;
 }) {
@@ -1401,6 +1508,7 @@ function RemoteViewer({
           {fps > 0 ? ` · ~${fps} fps` : ""}
         </span>
         <span className="remote-viewer-spacer" />
+        <CoHelperMenu session={session} agents={agents} onChange={onSessionChange} />
         <span className="remote-viewer-agent">
           <Monitor size={13} /> {session.agent?.name ?? session.customer.name}
         </span>

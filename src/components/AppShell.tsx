@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   Activity,
+  Bell,
   ChevronRight,
   CircleCheck,
+  CircleX,
   ContactRound,
   FileText,
   Gauge,
@@ -25,10 +27,10 @@ import {
 } from "lucide-react";
 import { useAuth } from "../lib/auth";
 import { callSecureContext } from "../lib/calls";
-import { ROLE_LABEL } from "../lib/format";
-import { api } from "../lib/api";
+import { ROLE_LABEL, relativeTime } from "../lib/format";
+import { api, errorMessage } from "../lib/api";
 import { useApi, useRealtime } from "../lib/hooks";
-import type { TicketListResponse } from "../lib/types";
+import type { NotificationsResponse, TicketListResponse } from "../lib/types";
 import { Avatar, BackButton, IconButton, LiveBadge, type IconType } from "./ui";
 import { useToast } from "./toast";
 
@@ -101,6 +103,9 @@ export function AppShell({ portal, children }: { portal: PortalKey; children: Re
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [mediaWarningDismissed, setMediaWarningDismissed] = useState(false);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [notifBusy, setNotifBusy] = useState<number | null>(null);
+  const notifRef = useRef<HTMLDivElement | null>(null);
   const config = PORTALS[portal];
   const callSecurity = callSecureContext();
 
@@ -109,9 +114,18 @@ export function AppShell({ portal, children }: { portal: PortalKey; children: Re
     [portal],
     { enabled: Boolean(user) },
   );
+  const notifications = useApi<NotificationsResponse>(
+    () => api.get<NotificationsResponse>("/api/notifications"),
+    [portal],
+    { enabled: Boolean(user) },
+  );
   const liveStatus = useRealtime(
     (event) => {
       ticketFeed.reload();
+      notifications.reload();
+      if (event.type === "notification:new" && event.notificationType === "co_helper_request") {
+        toast(`${event.requesterName ?? "A teammate"} needs a co-helper${event.ref ? ` on ${event.ref}` : ""}.`, "info");
+      }
       const target = event.ref ? ` ${event.ref}` : " a request";
       if (event.type === "ticket:admin-help") {
         const who = event.agentName ?? "IT support";
@@ -133,7 +147,53 @@ export function AppShell({ portal, children }: { portal: PortalKey; children: Re
 
   useEffect(() => {
     setOpen(false);
+    setNotifOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!notifOpen) return;
+    const close = (event: MouseEvent) => {
+      if (notifRef.current && !notifRef.current.contains(event.target as Node)) setNotifOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    return () => document.removeEventListener("mousedown", close);
+  }, [notifOpen, notifRef]);
+
+  const ticketHref = (ticketId: number) =>
+    portal === "admin" ? `/admin/requests/${ticketId}` : `/agent/tickets/${ticketId}`;
+
+  const openNotification = async (id: number, ticketId: number | null) => {
+    setNotifOpen(false);
+    if (ticketId) navigate(ticketHref(ticketId));
+    try {
+      await api.post(`/api/notifications/${id}/read`);
+    } finally {
+      notifications.reload();
+    }
+  };
+
+  const respondToCoHelper = async (id: number, requestId: number, accept: boolean) => {
+    setNotifBusy(requestId);
+    try {
+      const result = await api.post<{ ok?: boolean; requestOpen?: boolean; ticket?: { id: number } }>(
+        `/api/co-helper-requests/${requestId}/${accept ? "accept" : "decline"}`,
+      );
+      if (accept) {
+        toast("You're now a co-helper on that request.", "success");
+        await api.post(`/api/notifications/${id}/read`).catch(() => undefined);
+        setNotifOpen(false);
+        if (result.ticket?.id) navigate(ticketHref(result.ticket.id));
+      } else {
+        toast(result.requestOpen ? "Passed — the team can still pick it up." : "Request declined.", "info");
+      }
+      notifications.reload();
+      ticketFeed.reload();
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setNotifBusy(null);
+    }
+  };
 
   const badges = useMemo(() => {
     const tickets = ticketFeed.data?.tickets ?? [];
@@ -150,6 +210,17 @@ export function AppShell({ portal, children }: { portal: PortalKey; children: Re
     }
     return { late: tickets.filter((ticket) => ticket.isLate).length } as const;
   }, [ticketFeed.data, portal]);
+
+  const unreadNotifications = notifications.data?.unread ?? 0;
+  const notifItems = notifications.data?.notifications ?? [];
+
+  const markAllRead = async () => {
+    try {
+      await api.post("/api/notifications/read-all");
+    } finally {
+      notifications.reload();
+    }
+  };
 
   const isNavPage = config.items.some((item) => item.to === location.pathname);
   // Detail pages render their own contextual back link, so skip the topbar one there.
@@ -252,6 +323,86 @@ export function AppShell({ portal, children }: { portal: PortalKey; children: Re
             <strong>{section}</strong>
           </div>
           <div className="topbar-right">
+            {portal !== "customer" ? (
+              <div className="notif-wrap" ref={notifRef}>
+              <button
+                type="button"
+                className="notif-btn"
+                aria-label={unreadNotifications ? `Notifications, ${unreadNotifications} unread` : "Notifications"}
+                aria-expanded={notifOpen}
+                onClick={() => setNotifOpen((value) => !value)}
+              >
+                <Bell size={18} />
+                {unreadNotifications > 0 ? (
+                  <span className="notif-count">{unreadNotifications > 9 ? "9+" : unreadNotifications}</span>
+                ) : null}
+              </button>
+              {notifOpen ? (
+                <div className="notif-panel" role="dialog" aria-label="Notifications">
+                  <div className="notif-head">
+                    <strong>Notifications</strong>
+                    {unreadNotifications > 0 ? (
+                      <button type="button" className="link-button" onClick={() => void markAllRead()}>
+                        Mark all read
+                      </button>
+                    ) : null}
+                  </div>
+                  {notifItems.length === 0 ? (
+                    <p className="notif-empty">You're all caught up.</p>
+                  ) : (
+                    <ul className="notif-list">
+                      {notifItems.map((item) => {
+                        const canRespond =
+                          item.type === "co_helper_request" &&
+                          item.requestStatus === "pending" &&
+                          item.requestId != null;
+                        return (
+                          <li key={item.id} className={`notif-item ${item.readAt ? "" : "is-unread"}`.trim()}>
+                            <button
+                              type="button"
+                              className="notif-item-body"
+                              onClick={() => void openNotification(item.id, item.ticketId)}
+                            >
+                              <span className="notif-item-title">{item.title}</span>
+                              {item.body ? <span className="notif-item-text">{item.body}</span> : null}
+                              <span className="notif-item-meta">
+                                {item.ticketRef ? `${item.ticketRef} · ` : ""}
+                                {relativeTime(item.createdAt)}
+                              </span>
+                            </button>
+                            {canRespond ? (
+                              <div className="notif-actions">
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-primary"
+                                  disabled={notifBusy === item.requestId}
+                                  onClick={() =>
+                                    void respondToCoHelper(item.id, item.requestId as number, true)
+                                  }
+                                >
+                                  <CircleCheck size={14} /> Accept
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-secondary"
+                                  disabled={notifBusy === item.requestId}
+                                  onClick={() =>
+                                    void respondToCoHelper(item.id, item.requestId as number, false)
+                                  }
+                                >
+                                  <CircleX size={14} /> Decline
+                                </button>
+                              </div>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
+              </div>
+            ) : null}
             <LiveBadge status={liveStatus} />
             <div className="topbar-user">
               <Avatar name={user?.name ?? "Support"} size="sm" />

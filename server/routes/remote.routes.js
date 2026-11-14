@@ -437,4 +437,45 @@ router.post("/remote-sessions/:id/keepalive", (req, res) => {
   return res.status(204).end();
 });
 
+/** The requesting technician or an admin can add a second technician to a live session. */
+router.post("/remote-sessions/:id/dual-tech/join", (req, res) => {
+  const session = loadSession(req, res);
+  if (!session) return;
+
+  const canInvite =
+    req.user.role === "admin" ||
+    (req.user.role === "it" && req.user.id === session.requested_by);
+  if (!canInvite) {
+    return fail(res, 403, "You aren't allowed to add a co-helper to this session.");
+  }
+
+  if (!OPEN_STATUSES.includes(session.status)) {
+    return fail(res, 409, "Start a remote session before adding a co-helper.");
+  }
+
+  if (session.dual_technician_id) {
+    return fail(res, 409, "This session already has a co-helper.");
+  }
+
+  const dualTechId = parseId(req.body?.dualTechId);
+  if (!dualTechId) return fail(res, 400, "Choose a technician to add.");
+  if (dualTechId === session.requested_by) {
+    return fail(res, 400, "The requester can't be their own co-helper.");
+  }
+
+  const technician = db
+    .prepare("SELECT id, name FROM users WHERE id = ? AND role = 'it' AND active = 1")
+    .get(dualTechId);
+  if (!technician) return fail(res, 404, "That technician isn't available.");
+
+  db.prepare("UPDATE remote_sessions SET dual_technician_id = ? WHERE id = ?")
+    .run(dualTechId, session.id);
+
+  const row = getSessionRow(session.id);
+  const payload = serializeSession(row);
+  publish("remote:dual-tech-joined", { sessionId: row.id, remoteSession: payload }, audience(row));
+  notifyUser(dualTechId);
+  return res.json({ remoteSession: payload });
+});
+
 export default router;

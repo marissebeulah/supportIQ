@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tickets (
   ref TEXT NOT NULL UNIQUE,
   customer_id INTEGER NOT NULL REFERENCES users(id),
   assignee_id INTEGER REFERENCES users(id),
+  co_assignee_id INTEGER REFERENCES users(id),
   subject TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   category TEXT NOT NULL DEFAULT 'Other',
@@ -69,6 +70,36 @@ CREATE TABLE IF NOT EXISTS tickets (
   admin_help_requested_at TEXT,
   admin_help_reason TEXT,
   reopened_count INTEGER NOT NULL DEFAULT 0
+);
+
+-- An optional second technician on a ticket. The admin sets one directly, or
+-- the assigned technician asks a teammate and they accept the request.
+CREATE TABLE IF NOT EXISTS co_helper_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  requester_id INTEGER NOT NULL REFERENCES users(id),
+  -- NULL means the request was broadcast to the whole IT team.
+  target_id INTEGER REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'pending'
+    CHECK (status IN ('pending', 'accepted', 'declined', 'cancelled')),
+  note TEXT,
+  created_at TEXT NOT NULL,
+  responded_at TEXT,
+  responder_id INTEGER REFERENCES users(id)
+);
+
+-- In-app notifications. Each row belongs to one user and may point at a ticket
+-- or a co-helper request so the portal can deep-link to the work.
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT,
+  ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+  request_id INTEGER,
+  read_at TEXT,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -286,7 +317,14 @@ CREATE TABLE IF NOT EXISTS remote_sessions (
   started_with TEXT,
   last_frame_at TEXT,
   expires_at TEXT NOT NULL,
-  privacy_mode INTEGER NOT NULL DEFAULT 0
+  privacy_mode INTEGER NOT NULL DEFAULT 0,
+  dual_technician_id INTEGER REFERENCES users(id),
+  primary_technician_rating INTEGER,
+  primary_technician_rating_comment TEXT,
+  primary_technician_rated_at TEXT,
+  dual_technician_rating INTEGER,
+  dual_technician_rating_comment TEXT,
+  dual_technician_rated_at TEXT
 );
 
 -- A paired Windows computer that belongs to a customer. The bearer token is
@@ -317,6 +355,7 @@ CREATE TABLE IF NOT EXISTS agent_pairing_codes (
 
 CREATE INDEX IF NOT EXISTS idx_tickets_customer ON tickets(customer_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_assignee ON tickets(assignee_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_co_assignee ON tickets(co_assignee_id);
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);
 CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets(updated_at);
 CREATE INDEX IF NOT EXISTS idx_messages_ticket ON messages(ticket_id, created_at);
@@ -329,6 +368,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_tags_ticket ON ticket_tags(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_tags_tag ON ticket_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_customer_tags_customer ON customer_tags(customer_id);
+CREATE INDEX IF NOT EXISTS idx_co_helper_requests_ticket ON co_helper_requests(ticket_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_co_helper_requests_target ON co_helper_requests(target_id, status);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_calls_ticket ON calls(ticket_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 CREATE INDEX IF NOT EXISTS idx_remote_sessions_ticket ON remote_sessions(ticket_id, created_at);
@@ -350,6 +392,7 @@ for (const [column, def] of [
   ["rejection_reason", "TEXT"],
   ["admin_help_requested_at", "TEXT"],
   ["admin_help_reason", "TEXT"],
+  ["co_assignee_id", "INTEGER REFERENCES users(id)"],
 ]) {
   const columns = db.prepare("PRAGMA table_info(tickets)").all();
   if (!columns.some((entry) => entry.name === column)) {
@@ -379,6 +422,14 @@ for (const [column, def] of [
   // Privacy mode shows the customer a full-screen "secure session" animation
   // while the technician works on the real desktop underneath.
   ["privacy_mode", "INTEGER NOT NULL DEFAULT 0"],
+  // A second technician who joins the same session to help (optional).
+  ["dual_technician_id", "INTEGER REFERENCES users(id)"],
+  ["primary_technician_rating", "INTEGER"],
+  ["primary_technician_rating_comment", "TEXT"],
+  ["primary_technician_rated_at", "TEXT"],
+  ["dual_technician_rating", "INTEGER"],
+  ["dual_technician_rating_comment", "TEXT"],
+  ["dual_technician_rated_at", "TEXT"],
 ]) {
   const columns = db.prepare("PRAGMA table_info(remote_sessions)").all();
   if (!columns.some((entry) => entry.name === column)) {

@@ -50,6 +50,9 @@ export function summarizeTicket(row, viewer) {
     assignee: row.assignee_id
       ? { id: row.assignee_id, name: row.assignee_name }
       : null,
+    coAssignee: row.co_assignee_id
+      ? { id: row.co_assignee_id, name: row.co_assignee_name }
+      : null,
     lastMessage: row.last_message_at
       ? {
           body: row.last_body ?? "",
@@ -77,13 +80,13 @@ function buildTicketQuery(viewer, filters = {}) {
     params.push(viewer.id);
   } else {
     if (viewer.role === "it") {
-      where.push("t.assignee_id = ?");
-      params.push(viewer.id);
+      where.push("(t.assignee_id = ? OR t.co_assignee_id = ?)");
+      params.push(viewer.id, viewer.id);
     }
     const scope = filters.scope || "all";
     if (scope === "mine") {
-      where.push("t.assignee_id = ?");
-      params.push(viewer.id);
+      where.push("(t.assignee_id = ? OR t.co_assignee_id = ?)");
+      params.push(viewer.id, viewer.id);
     } else if (scope === "unassigned") {
       where.push("t.assignee_id IS NULL");
       where.push("t.status NOT IN ('resolved', 'closed')");
@@ -156,6 +159,7 @@ function buildTicketQuery(viewer, filters = {}) {
       c.name AS customer_name, c.company AS customer_company,
       p.name AS product_name,
       a.name AS assignee_name,
+      ca.name AS co_assignee_name,
       (SELECT m.body FROM messages m WHERE m.ticket_id = t.id AND ${internalClause}
         ORDER BY m.created_at DESC, m.id DESC LIMIT 1) AS last_body,
       (SELECT m.sender_role FROM messages m WHERE m.ticket_id = t.id AND ${internalClause}
@@ -170,6 +174,7 @@ function buildTicketQuery(viewer, filters = {}) {
     JOIN users c ON c.id = t.customer_id
     LEFT JOIN products p ON p.id = t.product_id
     LEFT JOIN users a ON a.id = t.assignee_id
+    LEFT JOIN users ca ON ca.id = t.co_assignee_id
     LEFT JOIN ticket_reads tr ON tr.ticket_id = t.id AND tr.user_id = ?
     ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
     ORDER BY t.updated_at DESC
@@ -187,7 +192,25 @@ export function listTickets(viewer, filters = {}) {
 export function canAccessTicket(ticket, viewer) {
   if (!ticket) return false;
   if (viewer.role === "admin") return true;
-  if (viewer.role === "it") return ticket.assignee_id === viewer.id;
+  if (viewer.role === "it") {
+    if (ticket.assignee_id === viewer.id) return true;
+    // The second technician on the ticket keeps the same access.
+    if (ticket.co_assignee_id === viewer.id) return true;
+    // A technician invited to help can open the ticket to accept or decline.
+    const invited = db
+      .prepare(
+        "SELECT 1 FROM co_helper_requests WHERE ticket_id = ? AND status = 'pending' AND target_id = ? LIMIT 1",
+      )
+      .get(ticket.id, viewer.id);
+    if (invited) return true;
+    // A co-helper on a live remote session also keeps access to that ticket.
+    const helping = db
+      .prepare(
+        "SELECT 1 FROM remote_sessions WHERE ticket_id = ? AND dual_technician_id = ? AND status IN ('requested', 'ready', 'active') LIMIT 1",
+      )
+      .get(ticket.id, viewer.id);
+    return Boolean(helping);
+  }
   return viewer.role === "customer" && ticket.customer_id === viewer.id;
 }
 
@@ -210,12 +233,15 @@ export function getTicketDetail(ticketId, viewer) {
   const row = db
     .prepare(
       `SELECT t.*, c.name AS customer_name, c.company AS customer_company, c.email AS customer_email,
-        a.name AS assignee_name, a.title AS assignee_title, p.name AS product_name,
+        a.name AS assignee_name, a.title AS assignee_title,
+        ca.name AS co_assignee_name, ca.title AS co_assignee_title, ca.email AS co_assignee_email,
+        p.name AS product_name,
         (SELECT COUNT(*) FROM messages m WHERE m.ticket_id = t.id AND m.is_flagged = 1) AS flagged_count
        FROM tickets t
        JOIN users c ON c.id = t.customer_id
        LEFT JOIN products p ON p.id = t.product_id
        LEFT JOIN users a ON a.id = t.assignee_id
+       LEFT JOIN users ca ON ca.id = t.co_assignee_id
        WHERE t.id = ?`,
     )
     .get(ticketId);
@@ -321,7 +347,7 @@ export function getTicketDetail(ticketId, viewer) {
           .get(row.customer_id);
 
   const agents =
-    viewer.role === "admin"
+    viewer.role === "admin" || viewer.role === "it"
       ? db
           .prepare("SELECT id, name, email, title FROM users WHERE role = 'it' AND active = 1 ORDER BY name")
           .all()
@@ -359,6 +385,16 @@ export function getTicketDetail(ticketId, viewer) {
       assignee: row.assignee_id
         ? { id: row.assignee_id, name: row.assignee_name, title: row.assignee_title }
         : null,
+      coAssignee: row.co_assignee_id
+        ? {
+            id: row.co_assignee_id,
+            name: row.co_assignee_name,
+            title: row.co_assignee_title,
+            email: row.co_assignee_email,
+          }
+        : null,
+      coHelperRequest:
+        viewer.role === "customer" ? null : serializeCoHelperRequest(ticketId, viewer),
       messages,
       activity,
       attachments: unlinked,
@@ -384,12 +420,66 @@ export function getTicketDetail(ticketId, viewer) {
           row.assignee_id === viewer.id &&
           row.admin_help_requested_at == null &&
           !["resolved", "closed"].includes(row.status),
+        canRequestCoHelper:
+          viewer.role === "it" &&
+          row.assignee_id === viewer.id &&
+          row.co_assignee_id == null &&
+          !["resolved", "closed"].includes(row.status) &&
+          !hasPendingCoHelperRequest(ticketId),
+        canAssignCoHelper:
+          viewer.role === "admin" && !["resolved", "closed"].includes(row.status),
+        canRemoveCoHelper:
+          (viewer.role === "admin" || row.assignee_id === viewer.id) &&
+          row.co_assignee_id != null,
         canChangeProduct: viewer.role !== "customer" || row.status !== "closed",
       },
     },
     agents,
     cannedReplies,
     products,
+  };
+}
+
+function hasPendingCoHelperRequest(ticketId) {
+  return Boolean(
+    db
+      .prepare("SELECT 1 FROM co_helper_requests WHERE ticket_id = ? AND status = 'pending' LIMIT 1")
+      .get(ticketId),
+  );
+}
+
+/**
+ * The pending co-helper request a viewer cares about: either one they sent, or
+ * one they can accept. Broadcast requests (no target) are visible to the
+ * assigned technician so they can cancel their own ask.
+ */
+function serializeCoHelperRequest(ticketId, viewer) {
+  const row = db
+    .prepare(
+      `SELECT r.*, u.name AS requester_name, t.name AS target_name
+       FROM co_helper_requests r
+       JOIN users u ON u.id = r.requester_id
+       LEFT JOIN users t ON t.id = r.target_id
+       WHERE r.ticket_id = ? AND r.status = 'pending'
+         AND (r.requester_id = ? OR r.target_id IS NULL OR r.target_id = ?)
+       ORDER BY r.created_at DESC, r.id DESC
+       LIMIT 1`,
+    )
+    .get(ticketId, viewer.id, viewer.id);
+
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    requester: { id: row.requester_id, name: row.requester_name },
+    target: row.target_id ? { id: row.target_id, name: row.target_name } : null,
+    note: row.note,
+    createdAt: row.created_at,
+    canRespond:
+      viewer.role === "it" &&
+      row.requester_id !== viewer.id &&
+      (row.target_id == null || row.target_id === viewer.id),
+    canCancel: row.requester_id === viewer.id || viewer.role === "admin",
   };
 }
 
@@ -403,6 +493,13 @@ export function activityLabel(event) {
       return from && to ? `Status changed from ${from} to ${to}` : `Status updated to ${to ?? "a new stage"}`;
     case "assigned":
       return event.to_value ? `Assigned to ${event.to_value}` : "Assignment cleared";
+    case "co_helper":
+      if (event.from_value && event.to_value) {
+        return `Co-helper changed from ${event.from_value} to ${event.to_value}`;
+      }
+      return event.to_value ? `${event.to_value} joined as co-helper` : "Co-helper removed";
+    case "co_helper_request":
+      return event.to_value ? `Asked ${event.to_value} to help as co-helper` : "Asked the IT team for a co-helper";
     case "priority":
       return `Priority set to ${event.to_value ?? "normal"}`;
     case "product":

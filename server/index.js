@@ -15,6 +15,7 @@ import uploadRoutes from "./routes/upload.routes.js";
 import reportsRoutes from "./routes/reports.routes.js";
 import callRoutes from "./routes/calls.routes.js";
 import remoteRoutes from "./routes/remote.routes.js";
+import notificationRoutes from "./routes/notifications.routes.js";
 import agentRoutes from "./routes/agent.routes.js";
 import diagnosticsRoutes from "./routes/diagnostics.routes.js";
 
@@ -104,6 +105,7 @@ app.use("/api/reports", reportsRoutes);
 app.use("/api/internal-messages", internalMessageRoutes);
 app.use("/api", callRoutes);
 app.use("/api", remoteRoutes);
+app.use("/api", notificationRoutes);
 app.use("/api", uploadRoutes);
 
 app.use("/api", (_req, res) => {
