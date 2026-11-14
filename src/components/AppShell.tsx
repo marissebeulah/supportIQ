@@ -160,7 +160,11 @@ export function AppShell({ portal, children }: { portal: PortalKey; children: Re
   }, [notifOpen, notifRef]);
 
   const ticketHref = (ticketId: number) =>
-    portal === "admin" ? `/admin/requests/${ticketId}` : `/agent/tickets/${ticketId}`;
+    portal === "admin"
+      ? `/admin/requests/${ticketId}`
+      : portal === "customer"
+        ? `/portal/requests/${ticketId}`
+        : `/agent/tickets/${ticketId}`;
 
   const openNotification = async (id: number, ticketId: number | null) => {
     setNotifOpen(false);
@@ -323,7 +327,7 @@ export function AppShell({ portal, children }: { portal: PortalKey; children: Re
             <strong>{section}</strong>
           </div>
           <div className="topbar-right">
-            {portal !== "customer" ? (
+            {user ? (
               <div className="notif-wrap" ref={notifRef}>
               <button
                 type="button"

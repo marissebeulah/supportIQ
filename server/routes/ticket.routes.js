@@ -158,6 +158,26 @@ function notifyStaffDecision(ticketId, decision, reason = null) {
   );
 }
 
+function notifyUsers(userIds, payload, exceptUserId = null) {
+  const recipients = [...new Set(userIds.filter((id) => Number.isInteger(id) && id !== exceptUserId))];
+  for (const userId of recipients) createNotification({ userId, ...payload });
+}
+
+function adminUserIds() {
+  return db
+    .prepare("SELECT id FROM users WHERE role = 'admin' AND active = 1")
+    .all()
+    .map((row) => row.id);
+}
+
+function staffUserIds(ticket) {
+  return [ticket.assignee_id, ticket.co_assignee_id];
+}
+
+function messagePreview(body) {
+  return body.replace(/\s+/g, " ").trim().slice(0, 160);
+}
+
 function loadTicket(req, res) {
   const id = parseId(req.params.id);
   if (!id) {
@@ -425,6 +445,24 @@ router.post("/tickets", requireRole("customer", "admin"), (req, res) => {
     });
 
     notifyTicket(result, "ticket:created");
+    if (autoAssignee) {
+      notifyUsers(
+        [autoAssignee.id],
+        { type: "ticket_created", title: "New request assigned to you", body: subject, ticketId: result },
+        req.user.id,
+      );
+    } else {
+      notifyUsers(
+        adminUserIds(),
+        {
+          type: "ticket_created",
+          title: "New request in the queue",
+          body: `${customer.name}: ${subject}`,
+          ticketId: result,
+        },
+        req.user.id,
+      );
+    }
     return respondWithTicket(res, result, 201);
   } catch (error) {
     return fail(res, error.status || 500, error.message || "Could not create the request.");
@@ -565,6 +603,33 @@ router.post("/tickets/:id/messages", (req, res) => {
 
     if (req.user.role === "customer") dismissTicketFollowUps(ticket.id);
     notifyTicket(ticket.id);
+
+    const preview = messagePreview(body);
+    if (req.user.role === "customer") {
+      const recipients = ticket.assignee_id ? staffUserIds(ticket) : adminUserIds();
+      notifyUsers(
+        recipients,
+        {
+          type: "ticket_reply",
+          title: `${req.user.name} replied`,
+          body: preview,
+          ticketId: ticket.id,
+        },
+        req.user.id,
+      );
+    } else if (!isInternal) {
+      notifyUsers(
+        [ticket.customer_id],
+        {
+          type: "ticket_reply",
+          title: "IT replied to your request",
+          body: preview,
+          ticketId: ticket.id,
+        },
+        req.user.id,
+      );
+    }
+
     const detail = getTicketDetail(ticket.id, req.user);
     return res.status(201).json({ ...detail, messageId });
   } catch (error) {
@@ -673,6 +738,20 @@ router.patch("/tickets/:id/status", requireRole("it", "admin"), (req, res) => {
   }
 
   notifyTicket(ticket.id);
+
+  const statusCopy = {
+    resolved: ["Resolution ready to review", "IT marked your request resolved. Approve it or tell us what's still wrong."],
+    closed: ["Request closed", ticket.subject],
+    waiting_customer: ["IT is waiting for your reply", ticket.subject],
+  }[status];
+  if (status !== ticket.status && statusCopy) {
+    notifyUsers(
+      [ticket.customer_id],
+      { type: "ticket_status", title: statusCopy[0], body: statusCopy[1], ticketId: ticket.id },
+      req.user.id,
+    );
+  }
+
   return respondWithTicket(res, ticket.id);
 });
 
@@ -708,6 +787,18 @@ router.patch("/tickets/:id/assign", requireRole("admin"), (req, res) => {
   });
 
   notifyTicket(ticket.id);
+  if (agent && agent.id !== ticket.assignee_id) {
+    notifyUsers(
+      [agent.id],
+      {
+        type: "ticket_assigned",
+        title: "Request assigned to you",
+        body: `${ticket.ref} — ${ticket.subject}`,
+        ticketId: ticket.id,
+      },
+      req.user.id,
+    );
+  }
   return respondWithTicket(res, ticket.id);
 });
 
@@ -1030,6 +1121,16 @@ router.post("/tickets/:id/request-admin", requireRole("it"), (req, res) => {
 
   notifyTicket(ticket.id);
   notifyAdminsHelpRequest(ticket.id, req.user.name, reason);
+  notifyUsers(
+    adminUserIds(),
+    {
+      type: "admin_help",
+      title: "Admin help requested",
+      body: `${req.user.name}: ${reason}`,
+      ticketId: ticket.id,
+    },
+    req.user.id,
+  );
   return respondWithTicket(res, ticket.id);
 });
 
@@ -1156,6 +1257,16 @@ router.post("/tickets/:id/approve", requireRole("customer"), (req, res) => {
   scheduleClosedSurvey(ticket.id, now);
   notifyTicket(ticket.id);
   notifyStaffDecision(ticket.id, "approved");
+  notifyUsers(
+    [...staffUserIds(ticket), ...adminUserIds()],
+    {
+      type: "resolution_approved",
+      title: "Resolution approved",
+      body: `${req.user.name} approved the fix.`,
+      ticketId: ticket.id,
+    },
+    req.user.id,
+  );
   return respondWithTicket(res, ticket.id);
 });
 
@@ -1196,6 +1307,16 @@ router.post("/tickets/:id/reject", requireRole("customer"), (req, res) => {
   dismissTicketFollowUps(ticket.id);
   notifyTicket(ticket.id);
   notifyStaffDecision(ticket.id, "rejected", reason);
+  notifyUsers(
+    [...staffUserIds(ticket), ...adminUserIds()],
+    {
+      type: "resolution_rejected",
+      title: "Resolution rejected",
+      body: `${req.user.name}: ${reason}`,
+      ticketId: ticket.id,
+    },
+    req.user.id,
+  );
   return respondWithTicket(res, ticket.id);
 });
 
