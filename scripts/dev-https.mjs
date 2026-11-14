@@ -76,9 +76,27 @@ function lanAddresses() {
   return addresses;
 }
 
-if (!(await apiResponding())) {
+let apiOwned = false;
+
+function startApi() {
+  if (apiOwned) return;
+  apiOwned = true;
   console.log(`[api] starting on port ${API_PORT}`);
   run("api", ["--watch", "server/index.js"], { PORT: API_PORT, NODE_ENV: "development" });
+}
+
+if (!(await apiResponding())) {
+  startApi();
+} else {
+  console.log(`[api] reusing the server already running on port ${API_PORT}`);
+  // An API this script did not start can go away later (its terminal closes,
+  // it crashes). The frontend would then be left with nothing to talk to, and
+  // signing in fails with no useful error, so take the port back.
+  setInterval(async () => {
+    if (apiOwned || (await apiResponding())) return;
+    console.log(`[api] nothing is answering on port ${API_PORT} any more, starting one`);
+    startApi();
+  }, 5000);
 }
 
 run("web", ["node_modules/vite/bin/vite.js", "--port", VITE_PORT, "--strictPort"], {
