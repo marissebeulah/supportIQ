@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Windows.Forms;
 
 namespace SupportIQ
@@ -100,7 +101,13 @@ namespace SupportIQ
         [DllImport("gdi32.dll")]
         private static extern bool DeleteObject(IntPtr handle);
 
-        public static CapturedFrame Capture(int maxWidth)
+        /// <summary>
+        /// Grabs the primary screen. <paramref name="drawInjectedPointer"/> is
+        /// used while the privacy screen has hidden the real pointer: the
+        /// technician's own cursor position is drawn instead, so they still see
+        /// where they are aiming.
+        /// </summary>
+        public static CapturedFrame Capture(int maxWidth, bool drawInjectedPointer)
         {
             Rectangle bounds = Screen.PrimaryScreen.Bounds;
             if (bounds.Width <= 0 || bounds.Height <= 0) return null;
@@ -141,7 +148,11 @@ namespace SupportIQ
             {
                 using (Graphics graphics = Graphics.FromImage(output))
                 {
-                    DrawCursor(graphics, bounds, (double)output.Width / bounds.Width);
+                    double frameScale = (double)output.Width / bounds.Width;
+                    if (!drawInjectedPointer || !DrawInjectedCursor(graphics, bounds, frameScale))
+                    {
+                        DrawCursor(graphics, bounds, frameScale);
+                    }
                 }
             }
             catch
@@ -152,6 +163,48 @@ namespace SupportIQ
             CapturedFrame frame = new CapturedFrame();
             frame.Bitmap = output;
             return frame;
+        }
+
+        /// <summary>
+        /// Draws an arrow at the last position the technician sent. Returns false
+        /// when no pointer position is known yet.
+        /// </summary>
+        private static bool DrawInjectedCursor(Graphics graphics, Rectangle bounds, double scale)
+        {
+            double normalisedX;
+            double normalisedY;
+            if (!ScreenInjector.TryGetPointer(out normalisedX, out normalisedY)) return false;
+
+            float x = (float)(normalisedX * bounds.Width * scale);
+            float y = (float)(normalisedY * bounds.Height * scale);
+
+            // The classic 12 x 19 Windows arrow, white with a black outline so it
+            // stays readable over screenshot content.
+            PointF[] arrow =
+            {
+                new PointF(x, y),
+                new PointF(x, y + 18f),
+                new PointF(x + 4.6f, y + 13.8f),
+                new PointF(x + 7.6f, y + 20.4f),
+                new PointF(x + 10.2f, y + 19.2f),
+                new PointF(x + 7.2f, y + 12.6f),
+                new PointF(x + 12f, y + 12.6f),
+            };
+
+            try
+            {
+                using (SolidBrush fill = new SolidBrush(Color.White))
+                using (Pen outline = new Pen(Color.Black, 1f))
+                {
+                    graphics.FillPolygon(fill, arrow);
+                    graphics.DrawPolygon(outline, arrow);
+                }
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static void DrawCursor(Graphics graphics, Rectangle bounds, double scale)
@@ -209,6 +262,24 @@ namespace SupportIQ
         private const uint KeyExtended = 0x0001;
 
         private static DateTime lastFailureLog = DateTime.MinValue;
+
+        // Last injected pointer position, in thousandths of the screen so the
+        // capture thread can read it without tearing. -1 means "not known yet".
+        private static int pointerX = -1;
+        private static int pointerY = -1;
+
+        /// <summary>Last position the technician pointed at, as 0..1 fractions of the screen.</summary>
+        public static bool TryGetPointer(out double x, out double y)
+        {
+            int storedX = Interlocked.CompareExchange(ref pointerX, 0, 0);
+            int storedY = Interlocked.CompareExchange(ref pointerY, 0, 0);
+            x = 0;
+            y = 0;
+            if (storedX < 0 || storedY < 0) return false;
+            x = storedX / 1000.0;
+            y = storedY / 1000.0;
+            return true;
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct MouseInput
@@ -291,6 +362,8 @@ namespace SupportIQ
         {
             double clampedX = Math.Min(1.0, Math.Max(0.0, x));
             double clampedY = Math.Min(1.0, Math.Max(0.0, y));
+            Interlocked.Exchange(ref pointerX, (int)Math.Round(clampedX * 1000.0));
+            Interlocked.Exchange(ref pointerY, (int)Math.Round(clampedY * 1000.0));
             Input input = new Input();
             input.type = InputMouse;
             input.union.mouse.dx = (int)Math.Round(clampedX * 65535.0);

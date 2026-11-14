@@ -50,6 +50,11 @@ namespace SupportIQ
                         Log.Write("Fatal error: " + error.ExceptionObject);
                     };
                     NativeMethods.SetProcessDPIAware();
+                    // Privacy mode blanks the system pointer while it is up. A crash
+                    // during a session would leave the customer without a mouse
+                    // pointer, so every start puts the normal cursors back.
+                    PrivacyScreenForm.RestoreSystemPointer();
+                    AppDomain.CurrentDomain.ProcessExit += delegate { PrivacyScreenForm.RestoreSystemPointer(); };
                     Application.EnableVisualStyles();
                     Application.SetCompatibleTextRenderingDefault(false);
                     RegisterUriScheme();

@@ -33,6 +33,9 @@ namespace SupportIQ
         private string _localHash;
         private int _failures;
         private DateTime _fallbackAttempt = DateTime.MinValue;
+        // Read by the capture thread: while the privacy screen hides the real
+        // pointer, frames get a drawn cursor instead of the system one.
+        private volatile bool _privacyActive;
 
         private Panel _pairPanel;
         private Panel _pairedPanel;
@@ -817,6 +820,7 @@ namespace SupportIQ
                     _privacy.Close();
                     _privacy = null;
                 }
+                _privacyActive = false;
                 if (_bar != null)
                 {
                     _bar.Close();
@@ -854,6 +858,7 @@ namespace SupportIQ
                     _privacy.Close();
                     _privacy = null;
                 }
+                _privacyActive = false;
                 return;
             }
             if (_privacy != null && !_privacy.IsDisposed) return;
@@ -874,6 +879,7 @@ namespace SupportIQ
                 Log.Write("Privacy screen failed to open: " + error);
                 screen.Dispose();
                 _privacyUnavailable = true;
+                _privacyActive = false;
                 return;
             }
             if (!excluded)
@@ -882,10 +888,14 @@ namespace SupportIQ
                 screen.Close();
                 screen.Dispose();
                 _privacyUnavailable = true;
+                _privacyActive = false;
                 Log.Write("Privacy mode unavailable: screen capture could not exclude the overlay.");
                 return;
             }
             _privacy = screen;
+            // The overlay blanks the real pointer, so the capture thread has to
+            // draw the technician's cursor itself from now on.
+            _privacyActive = true;
             // Keep the red "Stop sharing" bar clickable above the animation.
             if (_bar != null && !_bar.IsDisposed) _bar.BringToFront();
             Log.Write("Privacy screen enabled.");
@@ -922,7 +932,7 @@ namespace SupportIQ
                 Stopwatch watch = Stopwatch.StartNew();
                 try
                 {
-                    CapturedFrame frame = ScreenCapture.Capture(MaxFrameWidth);
+                    CapturedFrame frame = ScreenCapture.Capture(MaxFrameWidth, _privacyActive);
                     if (frame != null)
                     {
                         using (frame)
@@ -1223,6 +1233,7 @@ namespace SupportIQ
                 _privacy.Close();
                 _privacy = null;
             }
+            _privacyActive = false;
             if (_bar != null)
             {
                 _bar.Close();

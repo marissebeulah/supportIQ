@@ -11,15 +11,23 @@ namespace SupportIQ
     /// Full-screen "secure session" animation shown on the customer's display
     /// while the technician works on the real desktop underneath.
     ///
-    /// Three properties make this safe to use:
-    ///  - WM_NCHITTEST -> HTTRANSPARENT (plus WS_EX_TRANSPARENT): mouse input
-    ///    passes through to the windows below, so injected technician input
-    ///    still reaches them.
-    ///  - WS_EX_NOACTIVATE + ShowWithoutActivation: keyboard focus never moves
-    ///    here, so injected keystrokes reach the real foreground window.
+    /// Four properties make this safe to use:
+    ///  - WS_EX_LAYERED + WS_EX_TRANSPARENT: mouse input passes through to the
+    ///    windows below, including other processes, so injected technician
+    ///    input still reaches them. (A bare HTTRANSPARENT answer only skips
+    ///    windows in the same thread and would swallow every click.)
+    ///  - WS_EX_NOACTIVATE + ShowWithoutActivation, plus handing the foreground
+    ///    window straight back: keyboard focus never stays here, so injected
+    ///    keystrokes reach the real foreground window. Showing the window while
+    ///    the agent itself is foreground used to leave focus on the overlay,
+    ///    which silently swallowed every keystroke the technician sent.
     ///  - SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE): the overlay is left
     ///    out of the agent's GDI screen capture, so the technician keeps seeing
     ///    the actual desktop instead of this animation.
+    ///  - The system pointer is blanked for the duration: the technician's
+    ///    injected mouse moves are real cursor moves, so without this the
+    ///    customer would watch the pointer slide across the privacy screen. The
+    ///    technician still gets a pointer, drawn into the captured frames.
     ///
     /// Performance matters more than usual here: this runs on the customer's PC
     /// next to the agent that is streaming their screen, so the animation is
@@ -36,12 +44,17 @@ namespace SupportIQ
         private const int WS_EX_TRANSPARENT = 0x00000020;
         private const int WS_EX_NOACTIVATE = 0x08000000;
         private const int WS_EX_TOOLWINDOW = 0x00000080;
+        private const int WS_EX_LAYERED = 0x00080000;
+        private const int LWA_ALPHA = 0x00000002;
+
+        private const int WM_MOUSEACTIVATE = 0x0021;
+        private const int MA_NOACTIVATE = 3;
+
+        private const uint SPI_SETCURSORS = 0x0057;
+        private const uint OCR_NORMAL = 32512;
 
         private const uint SRCCOPY = 0x00CC0020;
         private const int COLORONCOLOR = 3;
-
-        private const int WM_NCHITTEST = 0x0084;
-        private const int HTTRANSPARENT = -1;
 
         /// <summary>
         /// The rain is rendered at 1/2 resolution and stretched to the screen.
@@ -78,6 +91,25 @@ namespace SupportIQ
 
         [DllImport("user32.dll")]
         private static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint colorKey, byte alpha, int flags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
+
+        [DllImport("user32.dll")]
+        private static extern bool SetForegroundWindow(IntPtr hwnd);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CreateCursor(
+            IntPtr instance, int hotSpotX, int hotSpotY, int width, int height, byte[] andPlane, byte[] xorPlane);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetSystemCursor(IntPtr cursor, uint id);
+
+        [DllImport("user32.dll")]
+        private static extern bool SystemParametersInfo(uint action, uint param, IntPtr value, uint flags);
 
         [DllImport("user32.dll")]
         private static extern IntPtr GetDC(IntPtr hwnd);
@@ -168,6 +200,13 @@ namespace SupportIQ
         private DateTime _lastLog = DateTime.UtcNow;
         private bool _ready;
 
+        // The window that had focus before the overlay appeared. It is handed
+        // back whenever Windows activates the overlay anyway, so a technician
+        // typing into an app never loses their keystrokes to the animation.
+        private IntPtr _previousForeground = IntPtr.Zero;
+        private bool _returningFocus;
+        private bool _pointerHidden;
+
         /// <summary>
         /// False when Windows would include this window in screen capture. The
         /// agent must then refuse privacy mode, otherwise the technician would
@@ -215,27 +254,15 @@ namespace SupportIQ
             get { return true; }
         }
 
-        /// <summary>
-        /// Every hit-test answer is "let the click fall through". WS_EX_TRANSPARENT
-        /// alone does not guarantee that for a top-level window, and this overlay
-        /// must never swallow the technician's injected clicks.
-        /// </summary>
-        protected override void WndProc(ref Message message)
-        {
-            if (message.Msg == WM_NCHITTEST)
-            {
-                message.Result = new IntPtr(HTTRANSPARENT);
-                return;
-            }
-            base.WndProc(ref message);
-        }
-
         protected override CreateParams CreateParams
         {
             get
             {
                 CreateParams cp = base.CreateParams;
-                cp.ExStyle |= WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+                // WS_EX_LAYERED + WS_EX_TRANSPARENT is what actually lets mouse
+                // input fall through to other processes. Nothing else is used,
+                // so the window is fully opaque.
+                cp.ExStyle |= WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
                 return cp;
             }
         }
@@ -243,14 +270,114 @@ namespace SupportIQ
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
+            // A layered window stays invisible until it is given attributes.
+            try
+            {
+                SetLayeredWindowAttributes(Handle, 0, 255, LWA_ALPHA);
+            }
+            catch
+            {
+            }
             ApplyCaptureExclusion();
+        }
+
+        protected override void SetVisibleCore(bool value)
+        {
+            if (value && !Visible) _previousForeground = GetForegroundWindow();
+            base.SetVisibleCore(value);
+            if (value) ReturnForeground();
         }
 
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
             ApplyCaptureExclusion();
+            HideSystemPointer();
             _timer.Start();
+        }
+
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            // Activation can also arrive after Show() returns (for example when
+            // the agent window closes underneath us). Never keep it.
+            ReturnForeground();
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == WM_MOUSEACTIVATE)
+            {
+                message.Result = new IntPtr(MA_NOACTIVATE);
+                return;
+            }
+            base.WndProc(ref message);
+        }
+
+        /// <summary>
+        /// Gives the foreground window back to whatever had it before. The
+        /// overlay must never own keyboard focus: everything the technician
+        /// types would land here and be thrown away.
+        /// </summary>
+        private void ReturnForeground()
+        {
+            if (_returningFocus) return;
+            IntPtr previous = _previousForeground;
+            if (previous == IntPtr.Zero || previous == Handle) return;
+            if (GetForegroundWindow() != Handle) return;
+            _returningFocus = true;
+            try
+            {
+                SetForegroundWindow(previous);
+            }
+            catch
+            {
+                // Losing the focus hand-back must never close the overlay.
+            }
+            finally
+            {
+                _returningFocus = false;
+            }
+        }
+
+        /// <summary>
+        /// Replaces the arrow pointer with a fully transparent one. Injected
+        /// mouse moves are real cursor moves, so this is what keeps the pointer
+        /// off the privacy screen while the technician works.
+        /// </summary>
+        private void HideSystemPointer()
+        {
+            if (_pointerHidden) return;
+            try
+            {
+                byte[] andMask = new byte[32 * 32 / 8];
+                for (int index = 0; index < andMask.Length; index++) andMask[index] = 0xFF;
+                byte[] xorMask = new byte[32 * 32 / 8];
+                IntPtr blank = CreateCursor(IntPtr.Zero, 0, 0, 32, 32, andMask, xorMask);
+                if (blank == IntPtr.Zero) return;
+                // SetSystemCursor takes ownership of the handle on success.
+                if (SetSystemCursor(blank, OCR_NORMAL)) _pointerHidden = true;
+            }
+            catch
+            {
+                // An unchanged pointer only blemishes privacy mode.
+            }
+        }
+
+        /// <summary>
+        /// Puts the normal system cursors back. Safe to call at any time, which
+        /// is why the agent also calls it on startup: a crash while privacy mode
+        /// was on must not leave the customer without a pointer.
+        /// </summary>
+        public static void RestoreSystemPointer()
+        {
+            try
+            {
+                SystemParametersInfo(SPI_SETCURSORS, 0, IntPtr.Zero, 0);
+            }
+            catch
+            {
+            }
         }
 
         private void ApplyCaptureExclusion()
@@ -573,6 +700,8 @@ namespace SupportIQ
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            RestoreSystemPointer();
+            _pointerHidden = false;
             ReleaseRainBuffer();
             try
             {
