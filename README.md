@@ -11,7 +11,9 @@
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
 - [Running the Application](#running-the-application)
+- [Privacy mode](#privacy-mode)
 - [Database](#database)
+- [Troubleshooting](#troubleshooting)
 - [Available Scripts](#available-scripts)
 - [License](#license)
 - [Credits](#credits)
@@ -99,7 +101,7 @@ The backend is an **Express.js** API (Node.js) that can use either **SQLite** (d
 
 4. **Database setup** (skip if you stay with SQLite):
 
-   - **SQLite** – the app creates `data/supportiq.db` on first run.
+   - **SQLite** – the app creates and seeds `data/supportiq.db` on first run.
    - **MySQL** – ensure the server is running and the `supportiq` database exists (the migration script can create it):
 
      ```bash
@@ -128,7 +130,8 @@ The backend is an **Express.js** API (Node.js) that can use either **SQLite** (d
 | `npm run build` | Compile TypeScript and bundle the React app into `dist/`. |
 | `npm test` | Run the Jest test suite. |
 | `npm run db:migrate` | Apply pending SQL migrations (MySQL/MariaDB only). |
-| `npm run db:reset` | Reset the SQLite database (drops and recreates `supportiq.db`). |
+| `npm run db:reset` | Delete `data/` (database, uploads, backups); the next start recreates and seeds the database. |
+| `npm run db:seed` | Rebuild the database from the tracked dump `data/supportiq.sql`. Add `-- --force` to replace an existing database; it is backed up first. |
 
 ---
 
@@ -165,17 +168,80 @@ To use SupportIQ from another device on the same network:
    can be called, but cannot be remote-controlled.
 
 6. During a session the technician can switch on **Privacy mode** (the eye
-   button in the remote viewer). The customer's screen then shows a full-screen
-   "secure support session" animation while the technician keeps working on the
-   real desktop. Everything still stops with **Stop sharing**.
+   button in the remote viewer). See [Privacy mode](#privacy-mode).
+
+---
+
+## Privacy mode
+
+Privacy mode covers the customer's own screen with a full-screen "secure support
+session" animation while the technician keeps seeing and controlling the real
+desktop underneath. It is switched on from the eye button in the remote viewer,
+and everything still stops with **Stop sharing**.
+
+What the agent guarantees, and why:
+
+- **The overlay never takes keyboard focus.** It is click-through
+  (`WM_NCHITTEST` → `HTTRANSPARENT`), it hands the foreground window back in
+  `SetVisibleCore`/`OnActivated`, and it answers `WM_MOUSEACTIVATE` with
+  `MA_NOACTIVATE`. Without this the overlay became the focused window and every
+  injected keystroke was posted to it and discarded, which looked like the
+  customer's PC freezing.
+- **The technician still sees the desktop.** The overlay is excluded from the
+  agent's own capture with `WDA_EXCLUDEFROMCAPTURE`, so the animation never
+  shows up in the viewer.
+- **The customer sees no pointer.** Injected mouse movement is a real cursor
+  move, so the system arrow is replaced with a fully transparent one
+  (`SetSystemCursor`) for as long as the overlay is up. The pointer is restored
+  with `SPI_SETCURSORS` when the overlay closes, when the agent exits, and when
+  the agent starts — the last one covers a previous run that was killed.
+- **The technician still sees a cursor.** Because the real arrow is blank, the
+  capture loop draws an arrow at the last injected position while privacy mode
+  is active.
+
+Known limitations:
+
+- Only the standard system arrow is blanked. An app that paints its own cursor
+  (some games, CAD) can still draw one over the privacy screen.
+- If the agent is force-killed while privacy is on, the pointer stays invisible
+  until the agent is started again.
+- Elevated windows (Task Manager, UAC prompts) ignore injected input.
+
+A step-by-step verification list lives in
+[docs/privacy-mode-checklist.md](docs/privacy-mode-checklist.md).
 
 ## Database
 
 ### SQLite (default)
 
 - The database file is `data/supportiq.db` (created automatically).
+- It is **not tracked by git**. SQLite rewrites it on every run, so it showed up
+  as a modification after each session and could be replaced by a pull. A
+  tracked database plus stale `-wal`/`-shm` journals is also what used to break
+  sign-in with "database disk image is malformed". `.gitignore` covers
+  `data/*.db`, `data/*.db-wal`, `data/*.db-shm`, and `data/*.db-journal`.
+- On first start the server creates the schema and seeds the demo accounts, so a
+  fresh clone works with no extra step. See [Demo accounts](#demo-accounts).
+- `data/supportiq.sql` is a tracked dump of a populated database; `npm run
+  db:seed` rebuilds the database from it.
 - All schema and seed data live in `server/migrations/` and `server/seed.js`.
 - No extra server required; perfect for local development and testing.
+
+### Demo accounts
+
+The seeded accounts all use the password `support123`:
+
+| Email | Role |
+|-------|------|
+| `admin@supportiq.app` | Admin |
+| `alex@supportiq.app` | IT support |
+| `priya@supportiq.app` | IT support |
+| `marcus@supportiq.app` | IT support |
+| `maya@northwind.co` | Customer |
+| `daniel@lumenpay.io` | Customer |
+| `elena@arclight.health` | Customer |
+
+Accounts you register yourself keep their own passwords.
 
 ### MySQL / MariaDB (optional)
 
@@ -186,6 +252,49 @@ To use SupportIQ from another device on the same network:
   - `server/migrations/002_text_column_defaults.sql` – ALTER TABLE defaults
 
 - The migration script also creates the database if it does not exist, using `CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`.
+
+---
+
+## Troubleshooting
+
+### "Can't reach SupportIQ" when signing in
+
+The web app is served by Vite, but every login, ticket, and call goes to the
+API on port 3001. If the API is not running, the frontend still loads and the
+login form can only report that the request failed — no password is ever checked.
+
+Check whether the API is alive:
+
+```bash
+curl http://localhost:3001/api/health
+```
+
+If nothing answers, start the stack again with `npm run dev:https` (or
+`npm run dev`). It prints whether it started its own API or reused one that was
+already running, and if it reused one that later stops answering it starts its
+own. Any HTTP status means the API is up; a connection error means it is not.
+
+### "Email or password is incorrect"
+
+The credentials are checked against the local database. The seeded accounts are
+listed under [Demo accounts](#demo-accounts) and use `support123`; an account you
+registered has the password you chose. You can request a reset link from the
+sign-in page (`POST /api/auth/forgot-password`).
+
+### "database disk image is malformed"
+
+Usually a stale `-wal`/`-shm` journal left by a killed server, or a database file
+replaced while the server was running.
+
+1. Stop the dev server.
+2. Run `npm run db:reset` to recreate and reseed an empty database, or
+   `npm run db:seed -- --force` to rebuild it from `data/supportiq.sql`
+   (the current file is backed up to `data/backups/` first).
+
+### The certificate warning on another device
+
+Install `.certs/dev.cer` once on that device, or open `/dev-cert.cer` from the
+server and trust it.
 
 ---
 
@@ -203,4 +312,4 @@ This project is **private** and source‑available. If you need a license grant,
 
 ---
 
-**Happy supporting!** 🎉
+**Happy supporting!** 🎉
