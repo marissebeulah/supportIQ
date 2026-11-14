@@ -6,6 +6,8 @@ import {
   CircleDot,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   Keyboard,
   KeyRound,
   LoaderCircle,
@@ -1102,6 +1104,37 @@ function RemoteViewer({
   const [fps, setFps] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
   const [inputError, setInputError] = useState<string | null>(null);
+  const [privacyMode, setPrivacyMode] = useState(session.privacyMode);
+  const [privacyBusy, setPrivacyBusy] = useState(false);
+  const { toast } = useToast();
+
+  // Follow server truth so a toggle from another admin tab stays in sync.
+  useEffect(() => {
+    setPrivacyMode(session.privacyMode);
+  }, [session.id, session.privacyMode]);
+
+  async function togglePrivacyMode() {
+    if (privacyBusy) return;
+    setPrivacyBusy(true);
+    setInputError(null);
+    try {
+      const data = await api.post<{ remoteSession: RemoteSession }>(
+        `/api/remote-sessions/${session.id}/privacy`,
+        { enabled: !privacyMode },
+      );
+      setPrivacyMode(data.remoteSession.privacyMode);
+      toast(
+        data.remoteSession.privacyMode
+          ? `Privacy screen is on for ${session.customer.name}. You can still work normally.`
+          : "Privacy screen is off. The customer can see this desktop again.",
+        "info",
+      );
+    } catch (error) {
+      setInputError(errorMessage(error));
+    } finally {
+      setPrivacyBusy(false);
+    }
+  }
 
   /* Frames ---------------------------------------------------------------- */
   useEffect(() => {
@@ -1374,6 +1407,27 @@ function RemoteViewer({
         <button className="remote-icon-btn" onClick={toggleFullscreen} title="Fullscreen">
           {fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
         </button>
+        {canControl ? (
+          <button
+            className={`remote-icon-btn ${privacyMode ? "is-active" : ""}`.trim()}
+            onClick={() => void togglePrivacyMode()}
+            disabled={privacyBusy}
+            aria-pressed={privacyMode}
+            title={
+              privacyMode
+                ? "Privacy screen is on — click to show this desktop to the customer"
+                : "Hide this desktop behind a secure-session screen on the customer's display"
+            }
+          >
+            {privacyBusy ? (
+              <LoaderCircle size={15} className="spin" />
+            ) : privacyMode ? (
+              <EyeOff size={15} />
+            ) : (
+              <Eye size={15} />
+            )}
+          </button>
+        ) : null}
         <Button size="sm" variant="danger" onClick={onEnd} loading={ending}>
           <Unplug size={14} /> End
         </Button>
@@ -1436,9 +1490,11 @@ function RemoteViewer({
       <div className="remote-viewer-foot">
         <span>
           <ShieldCheck size={13} />
-          {canControl
-            ? `You are controlling ${session.customer.name}'s computer. This session is visible to them and can be stopped at any time.`
-            : `You are viewing ${session.customer.name}'s computer. ${session.requestedBy.name} controls the mouse and keyboard.`}
+          {privacyMode
+            ? `Privacy screen is on. ${session.customer.name} sees a secure-session animation, while you keep seeing and controlling the real desktop.`
+            : canControl
+              ? `You are controlling ${session.customer.name}'s computer. This session is visible to them and can be stopped at any time.`
+              : `You are viewing ${session.customer.name}'s computer. ${session.requestedBy.name} controls the mouse and keyboard.`}
         </span>
         {inputError ? <span className="error-text">{inputError}</span> : null}
       </div>

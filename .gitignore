@@ -3,6 +3,7 @@ dist/
 .env
 data/*.db-shm
 data/*.db-wal
+data/backups/
 .certs/
 *.log
 agent/build/

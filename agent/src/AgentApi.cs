@@ -91,6 +91,16 @@ namespace SupportIQ
             }
         }
 
+        public static bool GetBool(Dictionary<string, object> root, string key)
+        {
+            object value;
+            if (root == null || !root.TryGetValue(key, out value) || value == null) return false;
+            if (value is bool) return (bool)value;
+            string text = Convert.ToString(value, CultureInfo.InvariantCulture) ?? "";
+            return string.Equals(text, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(text, "1", StringComparison.OrdinalIgnoreCase);
+        }
+
         public static double GetDouble(Dictionary<string, object> root, string key)
         {
             object value;
@@ -109,7 +119,7 @@ namespace SupportIQ
     /// <summary>HTTP client for the SupportIQ API. All calls are synchronous.</summary>
     internal sealed class AgentApi
     {
-        public const string Version = "1.0.6";
+        public const string Version = "1.0.7";
         private static bool _tlsConfigured;
         private readonly JavaScriptSerializer _json = new JavaScriptSerializer();
         private readonly string _server;

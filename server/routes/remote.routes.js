@@ -356,6 +356,33 @@ router.post("/remote-sessions/:id/end", (req, res) => {
   return res.json({ remoteSession: serializeSession(row) });
 });
 
+/**
+ * Privacy mode: the customer's screen is covered by the agent's animated
+ * "secure session" screen while the technician keeps working on the real
+ * desktop underneath. Only the technician who controls the session can toggle
+ * it, and the agent is woken immediately so the change is instant.
+ */
+router.post("/remote-sessions/:id/privacy", (req, res) => {
+  const session = loadSession(req, res);
+  if (!session) return;
+  if (!canControl(session, req.user)) {
+    return fail(res, 403, "Only the assigned technician can change the privacy screen.");
+  }
+  if (session.status !== "active") {
+    return fail(res, 409, "The remote session isn't active.");
+  }
+  const enabled = req.body?.enabled === true;
+  db.prepare("UPDATE remote_sessions SET privacy_mode = ? WHERE id = ?").run(
+    enabled ? 1 : 0,
+    session.id,
+  );
+  const row = getSessionRow(session.id);
+  const payload = serializeSession(row);
+  notifyUser(row.customer_id);
+  publish("remote:privacy", { sessionId: row.id, remoteSession: payload }, audience(row));
+  return res.json({ remoteSession: payload });
+});
+
 /** Lightweight state poll used by the browser while a session is open. */
 router.get("/remote-sessions/:id/status", (req, res) => {
   expireStaleSessions();

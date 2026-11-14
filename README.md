@@ -123,6 +123,7 @@ The backend is an **Express.js** API (Node.js) that can use either **SQLite** (d
 | `npm run dev` | Starts Vite + Express in development mode (hot‑reload for front‑end, nodemon‑like for back‑end). |
 | `npm run dev:https` | Same, but serves the app over HTTPS on port **5173** so camera, microphone, calls, and remote support work from other devices on the LAN. |
 | `npm run firewall:open` | Adds Windows Firewall inbound rules for ports 5173 and 3001 (run once from an elevated terminal). |
+| `npm run sync` | Pull the latest code from GitHub safely: stops if the API is running, backs up the database, clears stale SQLite journals, keeps your local data, and verifies integrity afterwards. |
 | `npm start` | Production build – first run `npm run build` then `node server/index.js`. |
 | `npm run build` | Compile TypeScript and bundle the React app into `dist/`. |
 | `npm test` | Run the Jest test suite. |
@@ -162,6 +163,11 @@ To use SupportIQ from another device on the same network:
    PC**, run the installer, and leave the agent in the tray. IT can then request
    a session from the same request page. Phones and devices without the agent
    can be called, but cannot be remote-controlled.
+
+6. During a session the technician can switch on **Privacy mode** (the eye
+   button in the remote viewer). The customer's screen then shows a full-screen
+   "secure support session" animation while the technician keeps working on the
+   real desktop. Everything still stops with **Stop sharing**.
 
 ## Database
 

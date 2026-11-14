@@ -561,6 +561,7 @@ export interface RemoteSession {
   endedAt: string | null;
   endedReason: string | null;
   startedWith: "consent" | "password" | null;
+  privacyMode: boolean;
   expiresAt: string;
   frame: RemoteFrameMeta | null;
 }

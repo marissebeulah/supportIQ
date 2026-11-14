@@ -58,6 +58,12 @@ The device token is stored in `%APPDATA%\SupportIQ\agent.json`. Diagnostics go t
   browser reads them from `/api/remote-sessions/:id/frame`.
 - Technician mouse/keyboard events are queued by the API and applied by the
   agent with `SendInput`.
+- The technician can switch on **Privacy mode** from the viewer. The customer's
+  display is covered by a full-screen "secure support session" animation while
+  the technician keeps working on the real desktop. The overlay is click-through,
+  never takes keyboard focus, and is excluded from screen capture, so the
+  technician still sees and controls the real screen. The red Stop sharing bar
+  stays on top and ends the session immediately.
 - A red **Stop sharing** bar stays at the top of the customer's screen. It, the
   portal's Stop button, and the Ctrl+Alt+Del-secured desktop all disconnect
   immediately. Ending a session clears the frame and command queues.
@@ -68,6 +74,9 @@ when the session ends. They are never written to the database or disk.
 ## Limitations
 
 - **Primary monitor only.** Multi-monitor setups share the primary display.
+- **Privacy mode** relies on `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`,
+  which needs Windows 10 version 2004 or later. On older builds the agent logs a
+  warning and leaves the screen visible instead of blinding the technician.
 - **Integrity levels.** The agent runs as the signed-in user (asInvoker). It can
   control apps at the same or lower integrity; elevated windows (UAC prompts,
   Task Manager as admin) ignore injected input unless the agent itself is run

@@ -79,6 +79,8 @@ export function serializeSession(row) {
     endedAt: row.ended_at ?? null,
     endedReason: row.ended_reason ?? null,
     startedWith: row.started_with ?? null,
+    // The customer's screen currently shows the privacy animation.
+    privacyMode: Number(row.privacy_mode) === 1,
     expiresAt: row.expires_at,
     frame: getFrameMeta(row.id),
   };

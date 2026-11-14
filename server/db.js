@@ -285,7 +285,8 @@ CREATE TABLE IF NOT EXISTS remote_sessions (
   ended_reason TEXT,
   started_with TEXT,
   last_frame_at TEXT,
-  expires_at TEXT NOT NULL
+  expires_at TEXT NOT NULL,
+  privacy_mode INTEGER NOT NULL DEFAULT 0
 );
 
 -- A paired Windows computer that belongs to a customer. The bearer token is
@@ -375,6 +376,9 @@ for (const [column, def] of [
   ["ended_reason", "TEXT"],
   ["started_with", "TEXT"],
   ["last_frame_at", "TEXT"],
+  // Privacy mode shows the customer a full-screen "secure session" animation
+  // while the technician works on the real desktop underneath.
+  ["privacy_mode", "INTEGER NOT NULL DEFAULT 0"],
 ]) {
   const columns = db.prepare("PRAGMA table_info(remote_sessions)").all();
   if (!columns.some((entry) => entry.name === column)) {

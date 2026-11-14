@@ -53,6 +53,8 @@ namespace SupportIQ
         private CheckBox _autoStartBox;
         private NotifyIcon _tray;
         private ActiveBarForm _bar;
+        private PrivacyScreenForm _privacy;
+        private volatile bool _privacyUnavailable;
         private System.Windows.Forms.Timer _pendingTimer;
         private bool _trayHintShown;
 
@@ -630,7 +632,13 @@ namespace SupportIQ
                         else
                         {
                             ScreenInjector.Apply(poll.Commands);
-                            Ui(delegate { SetStatus("Remote session active — sharing this screen", true); });
+                            bool privacy = Json.GetBool(current, "privacyMode");
+                            string requester = RequesterName(current);
+                            Ui(delegate
+                            {
+                                SetStatus("Remote session active — sharing this screen", true);
+                                SetPrivacy(privacy, requester);
+                            });
                         }
                     }
                     else
@@ -773,6 +781,9 @@ namespace SupportIQ
             if (id <= 0) return;
             if (Interlocked.Exchange(ref _activeSessionId, id) == id) return;
 
+            // A new session gets a fresh chance at privacy mode.
+            _privacyUnavailable = false;
+
             string requester = RequesterName(session);
             string ticket = Json.GetString(session, "ticketRef") ?? "";
             Log.Write("Session " + id + " is active for " + requester);
@@ -790,6 +801,7 @@ namespace SupportIQ
             {
                 SetStatus("Remote session active — " + requester + " is connected", true);
                 ShowActiveBar(requester);
+                SetPrivacy(Json.GetBool(session, "privacyMode"), requester);
             });
         }
 
@@ -800,6 +812,11 @@ namespace SupportIQ
             SetTrayText("SupportIQ Agent");
             Ui(delegate
             {
+                if (_privacy != null)
+                {
+                    _privacy.Close();
+                    _privacy = null;
+                }
                 if (_bar != null)
                 {
                     _bar.Close();
@@ -819,6 +836,59 @@ namespace SupportIQ
             _bar = new ActiveBarForm(requester, StopSession);
             _bar.Show();
             _bar.PositionAtTop();
+        }
+
+        /// <summary>
+        /// Shows or hides the full-screen privacy animation on the customer's
+        /// display. The overlay is click-through and excluded from screen
+        /// capture, so the technician keeps seeing and controlling the real
+        /// desktop underneath it.
+        /// </summary>
+        private void SetPrivacy(bool enabled, string requester)
+        {
+            if (!enabled)
+            {
+                _privacyUnavailable = false;
+                if (_privacy != null)
+                {
+                    _privacy.Close();
+                    _privacy = null;
+                }
+                return;
+            }
+            if (_privacy != null && !_privacy.IsDisposed) return;
+            // Retrying a whole full-screen window on every poll is expensive and
+            // would make the agent feel stuck on machines that cannot exclude it
+            // from capture. Try once per session instead.
+            if (_privacyUnavailable) return;
+
+            PrivacyScreenForm screen = new PrivacyScreenForm(requester);
+            bool excluded = false;
+            try
+            {
+                screen.Show();
+                excluded = screen.ReapplyCaptureExclusion();
+            }
+            catch (Exception error)
+            {
+                Log.Write("Privacy screen failed to open: " + error);
+                screen.Dispose();
+                _privacyUnavailable = true;
+                return;
+            }
+            if (!excluded)
+            {
+                // Never cover the screen unless the technician can still see it.
+                screen.Close();
+                screen.Dispose();
+                _privacyUnavailable = true;
+                Log.Write("Privacy mode unavailable: screen capture could not exclude the overlay.");
+                return;
+            }
+            _privacy = screen;
+            // Keep the red "Stop sharing" bar clickable above the animation.
+            if (_bar != null && !_bar.IsDisposed) _bar.BringToFront();
+            Log.Write("Privacy screen enabled.");
         }
 
         private void StopSession()
@@ -1148,6 +1218,11 @@ namespace SupportIQ
 
             StopAgent();
             long id = Interlocked.Exchange(ref _activeSessionId, 0);
+            if (_privacy != null)
+            {
+                _privacy.Close();
+                _privacy = null;
+            }
             if (_bar != null)
             {
                 _bar.Close();
