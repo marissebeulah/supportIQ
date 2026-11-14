@@ -15,7 +15,8 @@
     "start": "node server/index.js",
     "sync": "node scripts/sync.mjs",
     "db:migrate": "node scripts/migrate.mjs",
-    "db:reset": "node scripts/reset-db.mjs"
+    "db:reset": "node scripts/reset-db.mjs",
+    "db:seed": "node scripts/seed.mjs"
   },
   "dependencies": {
     "@fontsource-variable/dm-sans": "^5.3.0",

@@ -1,6 +1,8 @@
 // Pulls the latest code from GitHub without corrupting the local SQLite
-// database. A tracked .db file plus leftover -wal/-shm journals is what breaks
-// logins ("database disk image is malformed"), so this script:
+// database. The database is no longer tracked by git, but stale -wal/-shm
+// journals left by a killed server still break logins ("database disk image is
+// malformed"), and an older clone can still lose the file in a pull, so this
+// script:
 //   1. refuses to run while the API is serving requests,
 //   2. backs up the database and removes the stale journals,
 //   3. keeps your local data safe across the pull,
